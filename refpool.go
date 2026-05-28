@@ -202,6 +202,10 @@ func (p *Pool[T]) Reset() {
 // ResetFull clears all allocated values and makes the pool ready for the next cycle. It drops resources allocated
 // after pool creation, leaving only the base pre-allocated resources.
 func (p *Pool[T]) ResetFull() {
+	// reset tail pointers to nil to release resources allocated after pool creation
+	for i := p.baseChunks; i < uint32(len(p.chunks)); i++ {
+		p.chunks[i] = nil
+	}
 	p.chunks = p.chunks[:p.baseChunks]     // drop all chunks allocated after pool creation (if any)
 	p.index = min(p.index, p.baseChunks-1) // adjust index so Reset can safely clear all remaining chunks
 	p.Reset()

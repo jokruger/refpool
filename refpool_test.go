@@ -1,6 +1,39 @@
 package refpool
 
-import "testing"
+import (
+	"fmt"
+	"math"
+	"testing"
+)
+
+func ExamplePool() {
+	type node struct {
+		name string
+	}
+
+	p := New[node](4)
+
+	original, fresh := p.New()
+	fmt.Println(fresh)
+	p.Resolve(original).name = "root"
+
+	alias := original
+	p.Retain(alias)
+
+	fmt.Println(p.Resolve(alias).name)
+	p.Release(original)
+	fmt.Println(p.Resolve(alias).name)
+
+	p.Release(alias)
+	reused, fresh := p.New()
+	fmt.Println(fresh, reused == original)
+
+	// Output:
+	// true
+	// root
+	// root
+	// false true
+}
 
 func TestConstants(t *testing.T) {
 	if siBits+ciBits != 32 {
@@ -89,6 +122,164 @@ func TestMaxValues(t *testing.T) {
 	// Packing the max chunk index should keep ci+1 within ciBits.
 	if Reference(maxCI+1)&^ciMask != 0 {
 		t.Errorf("maxCI+1 overflows ciBits")
+	}
+}
+
+func TestNewResolveReleaseAndReuse(t *testing.T) {
+	p := New[string](0)
+
+	r, fresh := p.New()
+	if !fresh {
+		t.Fatal("first New returned fresh=false, want true")
+	}
+	if r != pack(0, 0) {
+		t.Fatalf("first reference = %#x, want %#x", r, pack(0, 0))
+	}
+
+	*p.Resolve(r) = "live"
+	if got := *p.Resolve(r); got != "live" {
+		t.Fatalf("resolved value = %q, want %q", got, "live")
+	}
+
+	p.Release(r)
+	if got := *p.Resolve(r); got != "" {
+		t.Fatalf("released value = %q, want zero value", got)
+	}
+
+	reused, fresh := p.New()
+	if fresh {
+		t.Fatal("New after Release returned fresh=true, want free-list reuse")
+	}
+	if reused != r {
+		t.Fatalf("reused reference = %#x, want %#x", reused, r)
+	}
+	if got := *p.Resolve(reused); got != "" {
+		t.Fatalf("reused value = %q, want zero value", got)
+	}
+}
+
+func TestRetainRequiresMatchingReleases(t *testing.T) {
+	p := New[int](0)
+
+	r, _ := p.New()
+	*p.Resolve(r) = 42
+	p.Retain(r)
+	p.Retain(r)
+
+	p.Release(r)
+	p.Release(r)
+	if got := *p.Resolve(r); got != 42 {
+		t.Fatalf("value after non-final releases = %d, want 42", got)
+	}
+
+	next, fresh := p.New()
+	if !fresh {
+		t.Fatal("New before final Release reused a retained slot")
+	}
+	if next == r {
+		t.Fatalf("New before final Release returned original reference %#x", r)
+	}
+
+	p.Release(r)
+	if got := *p.Resolve(r); got != 0 {
+		t.Fatalf("value after final Release = %d, want zero", got)
+	}
+
+	reused, fresh := p.New()
+	if fresh {
+		t.Fatal("New after final Release returned fresh=true, want reuse")
+	}
+	if reused != r {
+		t.Fatalf("reused reference = %#x, want %#x", reused, r)
+	}
+}
+
+func TestPinPreventsReleaseAndRetainEffects(t *testing.T) {
+	p := New[string](0)
+
+	r, _ := p.New()
+	*p.Resolve(r) = "pinned"
+	p.Pin(r)
+	p.Retain(r)
+	p.Release(r)
+
+	if got := *p.Resolve(r); got != "pinned" {
+		t.Fatalf("pinned value after Retain/Release = %q, want %q", got, "pinned")
+	}
+
+	next, fresh := p.New()
+	if !fresh {
+		t.Fatal("New after releasing pinned reference reused pinned slot")
+	}
+	if next == r {
+		t.Fatalf("New after releasing pinned reference returned pinned reference %#x", r)
+	}
+	if p.chunks[0].slots[0].rc != 0 {
+		t.Fatalf("pinned slot rc = %d, want 0", p.chunks[0].slots[0].rc)
+	}
+}
+
+func TestRetainMaxRefCountPinsSlot(t *testing.T) {
+	p := New[int](0)
+
+	r, _ := p.New()
+	ci, si := unpack(r)
+	p.chunks[ci].slots[si].rc = math.MaxUint32 - 1
+
+	p.Retain(r)
+	if got := p.chunks[ci].slots[si].rc; got != 0 {
+		t.Fatalf("rc after retaining max count = %d, want pinned rc 0", got)
+	}
+
+	p.Release(r)
+	next, fresh := p.New()
+	if !fresh {
+		t.Fatal("New after releasing auto-pinned reference reused pinned slot")
+	}
+	if next == r {
+		t.Fatalf("New after releasing auto-pinned reference returned pinned reference %#x", r)
+	}
+}
+
+func TestReleaseClearsPointerValues(t *testing.T) {
+	p := New[*int](0)
+
+	v := 42
+	r, _ := p.New()
+	*p.Resolve(r) = &v
+
+	p.Release(r)
+	if got := *p.Resolve(r); got != nil {
+		t.Fatalf("released pointer value = %v, want nil", got)
+	}
+}
+
+func TestAllocationAcrossChunkBoundary(t *testing.T) {
+	p := New[int](chunkSize)
+
+	var refs []Reference
+	for range chunkSize + 2 {
+		r, fresh := p.New()
+		if !fresh {
+			t.Fatalf("New returned fresh=false while no slots had been released")
+		}
+		refs = append(refs, r)
+	}
+
+	if refs[chunkSize-1] != pack(0, chunkSize-1) {
+		t.Fatalf("last first-chunk reference = %#x, want %#x", refs[chunkSize-1], pack(0, chunkSize-1))
+	}
+	if refs[chunkSize] != pack(1, 0) {
+		t.Fatalf("first second-chunk reference = %#x, want %#x", refs[chunkSize], pack(1, 0))
+	}
+	if refs[chunkSize+1] != pack(1, 1) {
+		t.Fatalf("second second-chunk reference = %#x, want %#x", refs[chunkSize+1], pack(1, 1))
+	}
+	if len(p.chunks) != 2 {
+		t.Fatalf("len(p.chunks) = %d, want 2", len(p.chunks))
+	}
+	if p.index != 1 {
+		t.Fatalf("p.index = %d, want 1", p.index)
 	}
 }
 
@@ -193,5 +384,28 @@ func TestResetFullShrinksToBaseChunks(t *testing.T) {
 	}
 	if got := *p.Resolve(r); got != 0 {
 		t.Fatalf("first value after ResetFull = %d, want zero", got)
+	}
+}
+
+func TestResetFullClearsDroppedChunkPointers(t *testing.T) {
+	p := New[*int](1)
+
+	v := 42
+	for range chunkSize + 1 {
+		r, _ := p.New()
+		*p.Resolve(r) = &v
+	}
+
+	if len(p.chunks) != 2 {
+		t.Fatalf("len(p.chunks) before ResetFull = %d, want 2", len(p.chunks))
+	}
+
+	p.ResetFull()
+
+	chunksBackingArray := p.chunks[:cap(p.chunks)]
+	for i := int(p.baseChunks); i < len(chunksBackingArray); i++ {
+		if chunksBackingArray[i] != nil {
+			t.Fatalf("dropped chunk pointer at backing index %d was not cleared", i)
+		}
 	}
 }

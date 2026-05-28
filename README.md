@@ -1,7 +1,7 @@
 # refpool
 
-Is a Go package for allocating, retaining, releasing, and reusing values through
-compact integer handles.
+refpool is a Go package for allocating, retaining, releasing, and reusing values
+through compact integer handles.
 
 It is designed for systems that need stable resource identifiers without
 exposing raw pointers, such as virtual machines, interpreters, scripting
@@ -17,6 +17,78 @@ arena-style lifetime management when all values can be discarded together.
 
 The package is intended to reduce GC pressure, minimize heap allocations, and
 make resource ownership explicit in performance-sensitive Go programs.
+
+## Concurrency
+
+`Pool` is intentionally not concurrency-safe. It does not use atomics or locks
+around allocation, reference counting, free-list updates, or resets.
+
+This keeps the hot path small for single-threaded runtimes, arena-like phases,
+and systems that already have ownership or scheduling guarantees. If a pool is
+shared across goroutines, the caller must provide external synchronization.
+
+## Usage Rules
+
+`Reference(0)` is reserved as an invalid / nil reference. References returned by
+`New` are compact integer handles and may be stored or copied, but the pointer
+returned by `Resolve` is temporary and must not be retained.
+
+Use `Retain` whenever a logical copy of a reference is created and may outlive
+the original owner. Each retained reference must eventually be matched by a
+`Release`, unless the value is pinned.
+
+`Release` decrements the reference count. When the count reaches zero, the value
+is reset to the zero value of `T` and the slot is added to the free-list for
+reuse.
+
+`Pin` marks a value as pool-owned until the next reset. Pinned values are not
+reference-counted, so `Retain` and `Release` have no effect on them. Values are
+also pinned automatically if the reference count reaches `math.MaxUint32`.
+
+`Reset` clears all currently allocated values and keeps all chunks for reuse.
+`ResetFull` also drops chunks allocated after pool creation. After either reset,
+old references must not be used until their slots are allocated again by `New`.
+
+## Example
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/jokruger/refpool"
+)
+
+func main() {
+	type node struct {
+		name string
+	}
+
+	p := refpool.New[node](4)
+
+	original, fresh := p.New()
+	fmt.Println(fresh)
+	p.Resolve(original).name = "root"
+
+	alias := original
+	p.Retain(alias)
+
+	fmt.Println(p.Resolve(alias).name)
+	p.Release(original)
+	fmt.Println(p.Resolve(alias).name)
+
+	p.Release(alias)
+	reused, fresh := p.New()
+	fmt.Println(fresh, reused == original)
+
+	// Output:
+	// true
+	// root
+	// root
+	// false true
+}
+```
 
 ## Install
 
