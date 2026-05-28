@@ -91,3 +91,107 @@ func TestMaxValues(t *testing.T) {
 		t.Errorf("maxCI+1 overflows ciBits")
 	}
 }
+
+func TestNewStoresBaseChunks(t *testing.T) {
+	cases := []struct {
+		preAlloc int
+		want     uint32
+	}{
+		{0, 1},
+		{1, 1},
+		{chunkSize, 1},
+		{chunkSize + 1, 2},
+		{2 * chunkSize, 2},
+	}
+
+	for _, c := range cases {
+		p := New[int](c.preAlloc)
+		if p.baseChunks != c.want {
+			t.Errorf("New(%d).baseChunks = %d, want %d", c.preAlloc, p.baseChunks, c.want)
+		}
+		if len(p.chunks) != int(c.want) {
+			t.Errorf("New(%d) allocated %d chunks, want %d", c.preAlloc, len(p.chunks), c.want)
+		}
+	}
+}
+
+func TestResetKeepsAllocatedChunks(t *testing.T) {
+	p := New[int](1)
+
+	var last Reference
+	for range chunkSize + 1 {
+		r, _ := p.New()
+		*p.Resolve(r) = 42
+		last = r
+	}
+
+	if len(p.chunks) != 2 {
+		t.Fatalf("len(p.chunks) before Reset = %d, want 2", len(p.chunks))
+	}
+
+	p.Release(last)
+	p.Reset()
+
+	if len(p.chunks) != 2 {
+		t.Fatalf("len(p.chunks) after Reset = %d, want 2", len(p.chunks))
+	}
+	if p.index != 0 {
+		t.Fatalf("p.index after Reset = %d, want 0", p.index)
+	}
+	if p.free != 0 {
+		t.Fatalf("p.free after Reset = %d, want 0", p.free)
+	}
+	if p.chunks[0].next != 0 {
+		t.Fatalf("p.chunks[0].next after Reset = %d, want 0", p.chunks[0].next)
+	}
+
+	r, fresh := p.New()
+	if !fresh {
+		t.Fatal("New after Reset reused free-list slot, want fresh allocation from reset chunk")
+	}
+	if r != pack(0, 0) {
+		t.Fatalf("first reference after Reset = %#x, want %#x", r, pack(0, 0))
+	}
+	if got := *p.Resolve(r); got != 0 {
+		t.Fatalf("first value after Reset = %d, want zero", got)
+	}
+}
+
+func TestResetFullShrinksToBaseChunks(t *testing.T) {
+	p := New[int](chunkSize + 1)
+
+	for range (2 * chunkSize) + 1 {
+		r, _ := p.New()
+		*p.Resolve(r) = 42
+	}
+
+	if p.baseChunks != 2 {
+		t.Fatalf("p.baseChunks = %d, want 2", p.baseChunks)
+	}
+	if len(p.chunks) != 3 {
+		t.Fatalf("len(p.chunks) before ResetFull = %d, want 3", len(p.chunks))
+	}
+
+	p.ResetFull()
+
+	if len(p.chunks) != int(p.baseChunks) {
+		t.Fatalf("len(p.chunks) after ResetFull = %d, want %d", len(p.chunks), p.baseChunks)
+	}
+	if p.index != 0 {
+		t.Fatalf("p.index after ResetFull = %d, want 0", p.index)
+	}
+	if p.free != 0 {
+		t.Fatalf("p.free after ResetFull = %d, want 0", p.free)
+	}
+
+	r, fresh := p.New()
+	if !fresh {
+		t.Fatal("New after ResetFull reused free-list slot, want fresh allocation from reset chunk")
+	}
+	if r != pack(0, 0) {
+		t.Fatalf("first reference after ResetFull = %#x, want %#x", r, pack(0, 0))
+	}
+	if got := *p.Resolve(r); got != 0 {
+		t.Fatalf("first value after ResetFull = %d, want zero", got)
+	}
+}
