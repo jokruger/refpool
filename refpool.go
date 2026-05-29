@@ -90,7 +90,11 @@ func New[T any](preAlloc int) *Pool[T] {
 // by the caller. Panics if the pool is full (i.e. it cannot allocate new chunk), which is unlikely in practice since
 // this may happen only when there are 2^32 slots in use. Returns the reference and flag indicating whether the
 // reference is newly allocated (true) or re-used from free-list (false).
-func (p *Pool[T]) New() (Reference, bool) {
+func (p *Pool[T]) New(init *T) (Reference, bool) {
+	if init == nil {
+		init = &p.zero
+	}
+
 	// re-use free slot if possible
 	if p.free != 0 {
 		r := p.free
@@ -98,6 +102,7 @@ func (p *Pool[T]) New() (Reference, bool) {
 		s := &p.chunks[ci].slots[si]
 		p.free = s.nextFree // update free-list head
 		s.rc = 1            // reset ref count to 1
+		s.value = *init     // set initial value
 		return r, false
 	}
 
@@ -105,7 +110,8 @@ func (p *Pool[T]) New() (Reference, bool) {
 	c := p.chunks[p.index]
 	if c.next < chunkSize {
 		si := c.next
-		c.slots[si].rc = 1 // reset ref count to 1
+		c.slots[si].rc = 1        // reset ref count to 1
+		c.slots[si].value = *init // set initial value
 		c.next++
 		return pack(p.index, si), true
 	}
@@ -116,7 +122,8 @@ func (p *Pool[T]) New() (Reference, bool) {
 	// can use pre-allocated chunk?
 	if int(p.index) < len(p.chunks) {
 		c = p.chunks[p.index]
-		c.slots[0].rc = 1 // reset ref count to 1
+		c.slots[0].rc = 1        // reset ref count to 1
+		c.slots[0].value = *init // set initial value
 		c.next = 1
 		return pack(p.index, 0), true
 	}
@@ -124,7 +131,8 @@ func (p *Pool[T]) New() (Reference, bool) {
 	// can allocate new chunk?
 	if p.index < maxChunks {
 		c = &chunk[T]{next: 1}
-		c.slots[0].rc = 1 // reset ref count to 1
+		c.slots[0].rc = 1        // reset ref count to 1
+		c.slots[0].value = *init // set initial value
 		p.chunks = append(p.chunks, c)
 		return pack(p.index, 0), true
 	}

@@ -13,7 +13,7 @@ func ExamplePool() {
 
 	p := New[node](4)
 
-	original, fresh := p.New()
+	original, fresh := p.New(nil)
 	fmt.Println(fresh)
 	p.Resolve(original).name = "root"
 
@@ -25,7 +25,7 @@ func ExamplePool() {
 	fmt.Println(p.Resolve(alias).name)
 
 	p.Release(alias)
-	reused, fresh := p.New()
+	reused, fresh := p.New(nil)
 	fmt.Println(fresh, reused == original)
 
 	// Output:
@@ -128,7 +128,7 @@ func TestMaxValues(t *testing.T) {
 func TestNewResolveReleaseAndReuse(t *testing.T) {
 	p := New[string](0)
 
-	r, fresh := p.New()
+	r, fresh := p.New(nil)
 	if !fresh {
 		t.Fatal("first New returned fresh=false, want true")
 	}
@@ -146,7 +146,7 @@ func TestNewResolveReleaseAndReuse(t *testing.T) {
 		t.Fatalf("released value = %q, want zero value", got)
 	}
 
-	reused, fresh := p.New()
+	reused, fresh := p.New(nil)
 	if fresh {
 		t.Fatal("New after Release returned fresh=true, want free-list reuse")
 	}
@@ -161,7 +161,7 @@ func TestNewResolveReleaseAndReuse(t *testing.T) {
 func TestRetainRequiresMatchingReleases(t *testing.T) {
 	p := New[int](0)
 
-	r, _ := p.New()
+	r, _ := p.New(nil)
 	*p.Resolve(r) = 42
 	p.Retain(r)
 	p.Retain(r)
@@ -172,7 +172,7 @@ func TestRetainRequiresMatchingReleases(t *testing.T) {
 		t.Fatalf("value after non-final releases = %d, want 42", got)
 	}
 
-	next, fresh := p.New()
+	next, fresh := p.New(nil)
 	if !fresh {
 		t.Fatal("New before final Release reused a retained slot")
 	}
@@ -185,7 +185,7 @@ func TestRetainRequiresMatchingReleases(t *testing.T) {
 		t.Fatalf("value after final Release = %d, want zero", got)
 	}
 
-	reused, fresh := p.New()
+	reused, fresh := p.New(nil)
 	if fresh {
 		t.Fatal("New after final Release returned fresh=true, want reuse")
 	}
@@ -197,7 +197,7 @@ func TestRetainRequiresMatchingReleases(t *testing.T) {
 func TestPinPreventsReleaseAndRetainEffects(t *testing.T) {
 	p := New[string](0)
 
-	r, _ := p.New()
+	r, _ := p.New(nil)
 	*p.Resolve(r) = "pinned"
 	p.Pin(r)
 	p.Retain(r)
@@ -207,7 +207,7 @@ func TestPinPreventsReleaseAndRetainEffects(t *testing.T) {
 		t.Fatalf("pinned value after Retain/Release = %q, want %q", got, "pinned")
 	}
 
-	next, fresh := p.New()
+	next, fresh := p.New(nil)
 	if !fresh {
 		t.Fatal("New after releasing pinned reference reused pinned slot")
 	}
@@ -222,7 +222,7 @@ func TestPinPreventsReleaseAndRetainEffects(t *testing.T) {
 func TestRetainMaxRefCountPinsSlot(t *testing.T) {
 	p := New[int](0)
 
-	r, _ := p.New()
+	r, _ := p.New(nil)
 	ci, si := unpack(r)
 	p.chunks[ci].slots[si].rc = math.MaxUint32 - 1
 
@@ -232,7 +232,7 @@ func TestRetainMaxRefCountPinsSlot(t *testing.T) {
 	}
 
 	p.Release(r)
-	next, fresh := p.New()
+	next, fresh := p.New(nil)
 	if !fresh {
 		t.Fatal("New after releasing auto-pinned reference reused pinned slot")
 	}
@@ -245,7 +245,7 @@ func TestReleaseClearsPointerValues(t *testing.T) {
 	p := New[*int](0)
 
 	v := 42
-	r, _ := p.New()
+	r, _ := p.New(nil)
 	*p.Resolve(r) = &v
 
 	p.Release(r)
@@ -259,7 +259,7 @@ func TestAllocationAcrossChunkBoundary(t *testing.T) {
 
 	var refs []Reference
 	for range chunkSize + 2 {
-		r, fresh := p.New()
+		r, fresh := p.New(nil)
 		if !fresh {
 			t.Fatalf("New returned fresh=false while no slots had been released")
 		}
@@ -311,7 +311,7 @@ func TestResetKeepsAllocatedChunks(t *testing.T) {
 
 	var last Reference
 	for range chunkSize + 1 {
-		r, _ := p.New()
+		r, _ := p.New(nil)
 		*p.Resolve(r) = 42
 		last = r
 	}
@@ -336,7 +336,7 @@ func TestResetKeepsAllocatedChunks(t *testing.T) {
 		t.Fatalf("p.chunks[0].next after Reset = %d, want 0", p.chunks[0].next)
 	}
 
-	r, fresh := p.New()
+	r, fresh := p.New(nil)
 	if !fresh {
 		t.Fatal("New after Reset reused free-list slot, want fresh allocation from reset chunk")
 	}
@@ -352,7 +352,7 @@ func TestResetFullShrinksToBaseChunks(t *testing.T) {
 	p := New[int](chunkSize + 1)
 
 	for range (2 * chunkSize) + 1 {
-		r, _ := p.New()
+		r, _ := p.New(nil)
 		*p.Resolve(r) = 42
 	}
 
@@ -375,7 +375,7 @@ func TestResetFullShrinksToBaseChunks(t *testing.T) {
 		t.Fatalf("p.free after ResetFull = %d, want 0", p.free)
 	}
 
-	r, fresh := p.New()
+	r, fresh := p.New(nil)
 	if !fresh {
 		t.Fatal("New after ResetFull reused free-list slot, want fresh allocation from reset chunk")
 	}
@@ -392,7 +392,7 @@ func TestResetFullClearsDroppedChunkPointers(t *testing.T) {
 
 	v := 42
 	for range chunkSize + 1 {
-		r, _ := p.New()
+		r, _ := p.New(nil)
 		*p.Resolve(r) = &v
 	}
 
