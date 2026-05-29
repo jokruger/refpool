@@ -60,9 +60,7 @@ func pack(ci uint32, si uint16) Reference {
 
 // Disassemble a reference into chunk index and slot index. Reference must be valid (not zero).
 func unpack(r Reference) (uint32, uint16) {
-	ci := uint32(r&ciMask) - 1
-	si := uint16(r>>ciBits) & siMask
-	return ci, si
+	return uint32(r&ciMask) - 1, uint16(r >> ciBits)
 }
 
 // New creates a new typed pool with at least `preAlloc` pre-allocated values.
