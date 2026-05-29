@@ -51,8 +51,6 @@ func BenchmarkAccessValues(b *testing.B) {
 			v1.b++
 			total += v2.a
 			v2.b++
-			total += v2.a
-			v2.b++
 			total += v3.a
 			v3.b++
 		}
