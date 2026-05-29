@@ -60,33 +60,36 @@ import (
 	"github.com/jokruger/refpool"
 )
 
+type Object struct {
+	Name string
+}
+
 func main() {
-	type node struct {
-		name string
+	pool := refpool.New[Object](1024)
+
+	ref, obj, ok := pool.New()
+	if !ok {
+		panic("refpool overflow")
 	}
+	obj.Name = "alpha"
 
-	p := refpool.New[node](4)
+	// Logical copy: retain once per extra owner.
+	pool.Retain(ref)
 
-	original, _, fresh, _ := p.New()
-	fmt.Println(fresh)
-	p.Resolve(original).name = "root"
+	// Resolve by handle when needed.
+	fmt.Println(pool.Resolve(ref).Name) // alpha
 
-	alias := original
-	p.Retain(alias)
+	// Release all owners.
+	pool.Release(ref)
+	pool.Release(ref)
 
-	fmt.Println(p.Resolve(alias).name)
-	p.Release(original)
-	fmt.Println(p.Resolve(alias).name)
-
-	p.Release(alias)
-	reused, fresh := p.New()
-	fmt.Println(fresh, reused == original)
-
-	// Output:
-	// true
-	// root
-	// root
-	// false true
+	// Slot can now be reused.
+	reusedRef, reusedObj, ok := pool.New()
+	if !ok {
+		panic("refpool overflow")
+	}
+	reusedObj.Name = "beta"
+	fmt.Println(reusedRef == ref) // often true (free-list reuse)
 }
 ```
 

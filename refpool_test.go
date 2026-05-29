@@ -1,39 +1,9 @@
 package refpool
 
 import (
-	"fmt"
 	"math"
 	"testing"
 )
-
-func ExamplePool() {
-	type node struct {
-		name string
-	}
-
-	p := New[node](4)
-
-	original, _, fresh, _ := p.New()
-	fmt.Println(fresh)
-	p.Resolve(original).name = "root"
-
-	alias := original
-	p.Retain(alias)
-
-	fmt.Println(p.Resolve(alias).name)
-	p.Release(original)
-	fmt.Println(p.Resolve(alias).name)
-
-	p.Release(alias)
-	reused, _, fresh, _ := p.New()
-	fmt.Println(fresh, reused == original)
-
-	// Output:
-	// true
-	// root
-	// root
-	// false true
-}
 
 func TestConstants(t *testing.T) {
 	if siBits+ciBits != 32 {
@@ -128,9 +98,9 @@ func TestMaxValues(t *testing.T) {
 func TestNewResolveReleaseAndReuse(t *testing.T) {
 	p := New[string](0)
 
-	r, _, fresh, _ := p.New()
-	if !fresh {
-		t.Fatal("first New returned fresh=false, want true")
+	r, _, ok := p.New()
+	if !ok {
+		t.Fatal("first New returned ok=false, want true")
 	}
 	if r != pack(0, 0) {
 		t.Fatalf("first reference = %#x, want %#x", r, pack(0, 0))
@@ -146,9 +116,9 @@ func TestNewResolveReleaseAndReuse(t *testing.T) {
 		t.Fatalf("released value = %q, want zero value", got)
 	}
 
-	reused, _, fresh, _ := p.New()
-	if fresh {
-		t.Fatal("New after Release returned fresh=true, want free-list reuse")
+	reused, _, ok := p.New()
+	if !ok {
+		t.Fatal("New after Release returned ok=false, want true")
 	}
 	if reused != r {
 		t.Fatalf("reused reference = %#x, want %#x", reused, r)
@@ -161,7 +131,7 @@ func TestNewResolveReleaseAndReuse(t *testing.T) {
 func TestRetainRequiresMatchingReleases(t *testing.T) {
 	p := New[int](0)
 
-	r, _, _, _ := p.New()
+	r, _, _ := p.New()
 	*p.Resolve(r) = 42
 	p.Retain(r)
 	p.Retain(r)
@@ -172,10 +142,7 @@ func TestRetainRequiresMatchingReleases(t *testing.T) {
 		t.Fatalf("value after non-final releases = %d, want 42", got)
 	}
 
-	next, _, fresh, _ := p.New()
-	if !fresh {
-		t.Fatal("New before final Release reused a retained slot")
-	}
+	next, _, _ := p.New()
 	if next == r {
 		t.Fatalf("New before final Release returned original reference %#x", r)
 	}
@@ -185,10 +152,7 @@ func TestRetainRequiresMatchingReleases(t *testing.T) {
 		t.Fatalf("value after final Release = %d, want zero", got)
 	}
 
-	reused, _, fresh, _ := p.New()
-	if fresh {
-		t.Fatal("New after final Release returned fresh=true, want reuse")
-	}
+	reused, _, _ := p.New()
 	if reused != r {
 		t.Fatalf("reused reference = %#x, want %#x", reused, r)
 	}
@@ -197,7 +161,7 @@ func TestRetainRequiresMatchingReleases(t *testing.T) {
 func TestPinPreventsReleaseAndRetainEffects(t *testing.T) {
 	p := New[string](0)
 
-	r, _, _, _ := p.New()
+	r, _, _ := p.New()
 	*p.Resolve(r) = "pinned"
 	p.Pin(r)
 	p.Retain(r)
@@ -207,10 +171,7 @@ func TestPinPreventsReleaseAndRetainEffects(t *testing.T) {
 		t.Fatalf("pinned value after Retain/Release = %q, want %q", got, "pinned")
 	}
 
-	next, _, fresh, _ := p.New()
-	if !fresh {
-		t.Fatal("New after releasing pinned reference reused pinned slot")
-	}
+	next, _, _ := p.New()
 	if next == r {
 		t.Fatalf("New after releasing pinned reference returned pinned reference %#x", r)
 	}
@@ -222,7 +183,7 @@ func TestPinPreventsReleaseAndRetainEffects(t *testing.T) {
 func TestRetainMaxRefCountPinsSlot(t *testing.T) {
 	p := New[int](0)
 
-	r, _, _, _ := p.New()
+	r, _, _ := p.New()
 	ci, si := unpack(r)
 	p.chunks[ci].slots[si].rc = math.MaxUint32 - 1
 
@@ -232,10 +193,7 @@ func TestRetainMaxRefCountPinsSlot(t *testing.T) {
 	}
 
 	p.Release(r)
-	next, _, fresh, _ := p.New()
-	if !fresh {
-		t.Fatal("New after releasing auto-pinned reference reused pinned slot")
-	}
+	next, _, _ := p.New()
 	if next == r {
 		t.Fatalf("New after releasing auto-pinned reference returned pinned reference %#x", r)
 	}
@@ -245,7 +203,7 @@ func TestReleaseClearsPointerValues(t *testing.T) {
 	p := New[*int](0)
 
 	v := 42
-	r, _, _, _ := p.New()
+	r, _, _ := p.New()
 	*p.Resolve(r) = &v
 
 	p.Release(r)
@@ -259,9 +217,9 @@ func TestAllocationAcrossChunkBoundary(t *testing.T) {
 
 	var refs []Reference
 	for range chunkSize + 2 {
-		r, _, fresh, _ := p.New()
-		if !fresh {
-			t.Fatalf("New returned fresh=false while no slots had been released")
+		r, _, ok := p.New()
+		if !ok {
+			t.Fatal("New returned ok=false before reaching capacity")
 		}
 		refs = append(refs, r)
 	}
@@ -280,6 +238,65 @@ func TestAllocationAcrossChunkBoundary(t *testing.T) {
 	}
 	if p.index != 1 {
 		t.Fatalf("p.index = %d, want 1", p.index)
+	}
+}
+
+func TestReuseFollowsFreeListLIFO(t *testing.T) {
+	p := New[int](0)
+
+	r1, _, ok := p.New()
+	if !ok {
+		t.Fatal("first New returned ok=false, want true")
+	}
+	r2, _, ok := p.New()
+	if !ok {
+		t.Fatal("second New returned ok=false, want true")
+	}
+	r3, _, ok := p.New()
+	if !ok {
+		t.Fatal("third New returned ok=false, want true")
+	}
+
+	p.Release(r1)
+	p.Release(r2)
+	p.Release(r3)
+
+	reused1, _, ok := p.New()
+	if !ok {
+		t.Fatal("first reuse New returned ok=false, want true")
+	}
+	reused2, _, ok := p.New()
+	if !ok {
+		t.Fatal("second reuse New returned ok=false, want true")
+	}
+	reused3, _, ok := p.New()
+	if !ok {
+		t.Fatal("third reuse New returned ok=false, want true")
+	}
+
+	if reused1 != r3 || reused2 != r2 || reused3 != r1 {
+		t.Fatalf(
+			"reuse order mismatch: got [%#x %#x %#x], want [%#x %#x %#x]",
+			reused1, reused2, reused3, r3, r2, r1,
+		)
+	}
+}
+
+func TestNewSlowOverflowReturnsFalse(t *testing.T) {
+	p := &Pool[int]{
+		chunks: []*chunk[int]{{}},
+		index:  maxChunks,
+	}
+
+	r, v, ok := p.newSlow()
+	if ok {
+		t.Fatal("newSlow returned ok=true at overflow boundary, want false")
+	}
+	if r != 0 {
+		t.Fatalf("overflow reference = %#x, want 0", r)
+	}
+	if v != nil {
+		t.Fatalf("overflow value pointer = %v, want nil", v)
 	}
 }
 
@@ -311,7 +328,7 @@ func TestResetKeepsAllocatedChunks(t *testing.T) {
 
 	var last Reference
 	for range chunkSize + 1 {
-		r, _, _, _ := p.New()
+		r, _, _ := p.New()
 		*p.Resolve(r) = 42
 		last = r
 	}
@@ -336,10 +353,7 @@ func TestResetKeepsAllocatedChunks(t *testing.T) {
 		t.Fatalf("p.chunks[0].next after Reset = %d, want 0", p.chunks[0].next)
 	}
 
-	r, _, fresh, _ := p.New()
-	if !fresh {
-		t.Fatal("New after Reset reused free-list slot, want fresh allocation from reset chunk")
-	}
+	r, _, _ := p.New()
 	if r != pack(0, 0) {
 		t.Fatalf("first reference after Reset = %#x, want %#x", r, pack(0, 0))
 	}
@@ -352,7 +366,7 @@ func TestResetFullShrinksToBaseChunks(t *testing.T) {
 	p := New[int](chunkSize + 1)
 
 	for range (2 * chunkSize) + 1 {
-		r, _, _, _ := p.New()
+		r, _, _ := p.New()
 		*p.Resolve(r) = 42
 	}
 
@@ -375,10 +389,7 @@ func TestResetFullShrinksToBaseChunks(t *testing.T) {
 		t.Fatalf("p.free after ResetFull = %d, want 0", p.free)
 	}
 
-	r, _, fresh, _ := p.New()
-	if !fresh {
-		t.Fatal("New after ResetFull reused free-list slot, want fresh allocation from reset chunk")
-	}
+	r, _, _ := p.New()
 	if r != pack(0, 0) {
 		t.Fatalf("first reference after ResetFull = %#x, want %#x", r, pack(0, 0))
 	}
@@ -392,7 +403,7 @@ func TestResetFullClearsDroppedChunkPointers(t *testing.T) {
 
 	v := 42
 	for range chunkSize + 1 {
-		r, _, _, _ := p.New()
+		r, _, _ := p.New()
 		*p.Resolve(r) = &v
 	}
 

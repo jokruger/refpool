@@ -12,11 +12,8 @@
 package refpool
 
 import (
-	"fmt"
 	"math"
 )
-
-var ErrOverflow = fmt.Errorf("unable to allocate new resource: pool is full")
 
 // Reference is a handle to a value in the pool. 0 corresponds to invalid / nil reference.
 type Reference uint32
@@ -87,18 +84,17 @@ func New[T any](preAlloc int) *Pool[T] {
 }
 
 // New creates a new (or re-use free) reference to a value in the pool. The value is not initialized and should be set
-// by the caller. Returns the reference, value pointer, flag indicating whether the reference is newly allocated (true)
-// or re-used from free-list (false), and error.
-func (p *Pool[T]) New() (Reference, *T, bool, error) {
-	if r, v, isNew, ok := p.newFast(); ok {
-		return r, v, isNew, nil
+// by the caller. Returns the reference, value pointer, and flag indicating whether allocation was successful.
+func (p *Pool[T]) New() (Reference, *T, bool) {
+	if r, v, ok := p.newFast(); ok {
+		return r, v, true
 	}
 
 	return p.newSlow()
 }
 
 // newFast serves the hot path: free-list reuse and allocation from current chunk.
-func (p *Pool[T]) newFast() (Reference, *T, bool, bool) {
+func (p *Pool[T]) newFast() (Reference, *T, bool) {
 	// re-use free slot if possible
 	if p.free != 0 {
 		r := p.free
@@ -106,7 +102,7 @@ func (p *Pool[T]) newFast() (Reference, *T, bool, bool) {
 		s := &p.chunks[ci].slots[si]
 		p.free = s.nextFree // update free-list head
 		s.rc = 1            // reset ref count to 1
-		return r, &s.value, false, true
+		return r, &s.value, true
 	}
 
 	// use next slot in current chunk if possible
@@ -115,14 +111,14 @@ func (p *Pool[T]) newFast() (Reference, *T, bool, bool) {
 		si := c.next
 		c.slots[si].rc = 1 // reset ref count to 1
 		c.next++
-		return pack(p.index, si), &c.slots[si].value, true, true
+		return pack(p.index, si), &c.slots[si].value, true
 	}
 
-	return 0, nil, false, false
+	return 0, nil, false
 }
 
 // newSlow handles chunk rollover, growth and overflow checks.
-func (p *Pool[T]) newSlow() (Reference, *T, bool, error) {
+func (p *Pool[T]) newSlow() (Reference, *T, bool) {
 	// next chunk
 	p.index++
 
@@ -131,7 +127,7 @@ func (p *Pool[T]) newSlow() (Reference, *T, bool, error) {
 		c := p.chunks[p.index]
 		c.slots[0].rc = 1 // reset ref count to 1
 		c.next = 1
-		return pack(p.index, 0), &c.slots[0].value, true, nil
+		return pack(p.index, 0), &c.slots[0].value, true
 	}
 
 	// can allocate new chunk?
@@ -139,10 +135,10 @@ func (p *Pool[T]) newSlow() (Reference, *T, bool, error) {
 		c := &chunk[T]{next: 1}
 		c.slots[0].rc = 1 // reset ref count to 1
 		p.chunks = append(p.chunks, c)
-		return pack(p.index, 0), &c.slots[0].value, true, nil
+		return pack(p.index, 0), &c.slots[0].value, true
 	}
 
-	return 0, nil, false, ErrOverflow
+	return 0, nil, false
 }
 
 // Pin marks the resource as arena-live (provided reference must be valid). A pinned resource is not reclaimed when its
