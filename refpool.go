@@ -21,6 +21,7 @@ type Reference uint32
 // Pool of reference-counted values.
 type Pool[T any] struct {
 	chunks     []*chunk[T] // allocated chunks
+	current    *chunk[T]   // currently active chunk (same as chunks[index])
 	index      uint32      // current chunk in use
 	free       Reference   // free-list head
 	baseChunks uint32      // number of pre-allocated chunks calculated when new Pool was created
@@ -79,6 +80,7 @@ func New[T any](preAlloc int) *Pool[T] {
 
 	// store baseChunks for future use in ResetFull
 	p.baseChunks = uint32(cs)
+	p.current = p.chunks[0]
 
 	return p
 }
@@ -106,7 +108,7 @@ func (p *Pool[T]) newFast() (Reference, *T, bool) {
 	}
 
 	// use next slot in current chunk if possible
-	c := p.chunks[p.index]
+	c := p.current
 	if c.next < chunkSize {
 		si := c.next
 		c.slots[si].rc = 1 // reset ref count to 1
@@ -125,6 +127,7 @@ func (p *Pool[T]) newSlow() (Reference, *T, bool) {
 	// can use pre-allocated chunk?
 	if int(p.index) < len(p.chunks) {
 		c := p.chunks[p.index]
+		p.current = c
 		c.slots[0].rc = 1 // reset ref count to 1
 		c.next = 1
 		return pack(p.index, 0), &c.slots[0].value, true
@@ -133,6 +136,7 @@ func (p *Pool[T]) newSlow() (Reference, *T, bool) {
 	// can allocate new chunk?
 	if p.index < maxChunks {
 		c := &chunk[T]{next: 1}
+		p.current = c
 		c.slots[0].rc = 1 // reset ref count to 1
 		p.chunks = append(p.chunks, c)
 		return pack(p.index, 0), &c.slots[0].value, true
@@ -204,6 +208,7 @@ func (p *Pool[T]) Reset() {
 
 	// reset pool state
 	p.index = 0
+	p.current = p.chunks[0]
 	p.free = 0
 }
 
@@ -216,5 +221,6 @@ func (p *Pool[T]) ResetFull() {
 	}
 	p.chunks = p.chunks[:p.baseChunks]     // drop all chunks allocated after pool creation (if any)
 	p.index = min(p.index, p.baseChunks-1) // adjust index so Reset can safely clear all remaining chunks
+	p.current = p.chunks[p.index]
 	p.Reset()
 }
