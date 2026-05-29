@@ -35,7 +35,7 @@ const siMask = uint16((1 << siBits) - 1)    // mask for slot index
 const ciBits = 32 - siBits                  // number of bits for chunk index
 const ciMask = Reference((1 << ciBits) - 1) // mask for chunk index
 const chunkSize = 1 << siBits               // number of slots per chunk
-const minChunks = 1024                      // min size of chunks slice
+const minChunks = 32                        // min size of chunks slice
 const maxChunks = (1 << ciBits) - 1         // max number of chunks
 
 // Chunk of slots for storing values.
