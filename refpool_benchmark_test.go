@@ -1,93 +1,89 @@
-package refpool
+package refpool_test
 
-import "testing"
+import (
+	"testing"
 
-type benchmarkValue struct {
+	"github.com/jokruger/refpool"
+)
+
+type Value struct {
 	a int
 	b int
 	c int
 	d int
 }
 
-var benchmarkPointerSink [3]*benchmarkValue
-var benchmarkReferenceSink [3]Reference
-var benchmarkIntSink int
+const sz = 10000
+const pa = 100
+
+var (
+	ptrs [sz]*Value
+	refs [sz]refpool.Reference
+	ints [sz]int
+)
 
 func BenchmarkAllocateNewValues(b *testing.B) {
 	b.Run("Heap", func(b *testing.B) {
 		b.ReportAllocs()
-
 		for i := range b.N {
-			v := &benchmarkValue{a: i, b: i + 1, c: i + 2, d: i + 3}
-			benchmarkPointerSink[0] = v
+			j := i % sz
+			ptrs[j] = &Value{a: i, b: i + 1, c: i + 2, d: i + 3}
 		}
 	})
 
 	b.Run("Refpool", func(b *testing.B) {
-		p := New[benchmarkValue](b.N)
-
+		for i := range sz {
+			refs[i] = 0
+		}
+		p := refpool.New[Value](pa)
 		b.ReportAllocs()
 		b.ResetTimer()
-
 		for i := range b.N {
 			r, v, _, _ := p.New()
-			*v = benchmarkValue{a: i, b: i + 1, c: i + 2, d: i + 3}
-			benchmarkReferenceSink[0] = r
+			*v = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
+			j := i % sz
+			if refs[j] != 0 {
+				p.Release(refs[j])
+			}
+			refs[j] = r
 		}
 	})
 }
 
 func BenchmarkAccessValues(b *testing.B) {
 	b.Run("Pointer", func(b *testing.B) {
-		v1 := &benchmarkValue{a: 1, b: 2, c: 3, d: 4}
-		v2 := &benchmarkValue{a: 1, b: 2, c: 3, d: 4}
-		v3 := &benchmarkValue{a: 1, b: 2, c: 3, d: 4}
-
+		for i := range sz {
+			ptrs[i] = &Value{a: i, b: i + 1, c: i + 2, d: i + 3}
+		}
 		b.ReportAllocs()
 		b.ResetTimer()
 
 		var total int
-		for range b.N {
-			total += v1.a
-			v1.b++
-			total += v2.a
-			v2.b++
-			total += v3.a
-			v3.b++
+		for i := range b.N {
+			v := ptrs[i%sz]
+			total += v.a
+			v.b++
 		}
-		benchmarkIntSink = total
-		benchmarkPointerSink[0] = v1
-		benchmarkPointerSink[1] = v2
-		benchmarkPointerSink[2] = v3
+		ints[0] = total
 	})
 
 	b.Run("RefpoolResolve", func(b *testing.B) {
-		p := New[benchmarkValue](1)
-		r1, v1, _, _ := p.New()
-		*v1 = benchmarkValue{a: 1, b: 2, c: 3, d: 4}
-		r2, v2, _, _ := p.New()
-		*v2 = benchmarkValue{a: 1, b: 2, c: 3, d: 4}
-		r3, v3, _, _ := p.New()
-		*v3 = benchmarkValue{a: 1, b: 2, c: 3, d: 4}
-
+		p := refpool.New[Value](pa)
+		for i := range sz {
+			r, v, _, _ := p.New()
+			*v = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
+			refs[i] = r
+		}
 		b.ReportAllocs()
 		b.ResetTimer()
 
 		var total int
-		for range b.N {
-			v := p.Resolve(r1)
-			total += v.a
-			v.b++
-			v = p.Resolve(r2)
-			total += v.a
-			v.b++
-			v = p.Resolve(r3)
+		for i := range b.N {
+			r := refs[i%sz]
+			v := p.Resolve(r)
 			total += v.a
 			v.b++
 		}
-		benchmarkIntSink = total
-		benchmarkReferenceSink[0] = r1
-		benchmarkReferenceSink[1] = r2
-		benchmarkReferenceSink[2] = r3
+		ints[0] = total
 	})
 }
