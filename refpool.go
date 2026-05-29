@@ -90,6 +90,15 @@ func New[T any](preAlloc int) *Pool[T] {
 // by the caller. Returns the reference, value pointer, flag indicating whether the reference is newly allocated (true)
 // or re-used from free-list (false), and error.
 func (p *Pool[T]) New() (Reference, *T, bool, error) {
+	if r, v, isNew, ok := p.newFast(); ok {
+		return r, v, isNew, nil
+	}
+
+	return p.newSlow()
+}
+
+// newFast serves the hot path: free-list reuse and allocation from current chunk.
+func (p *Pool[T]) newFast() (Reference, *T, bool, bool) {
 	// re-use free slot if possible
 	if p.free != 0 {
 		r := p.free
@@ -97,7 +106,7 @@ func (p *Pool[T]) New() (Reference, *T, bool, error) {
 		s := &p.chunks[ci].slots[si]
 		p.free = s.nextFree // update free-list head
 		s.rc = 1            // reset ref count to 1
-		return r, &s.value, false, nil
+		return r, &s.value, false, true
 	}
 
 	// use next slot in current chunk if possible
@@ -106,15 +115,20 @@ func (p *Pool[T]) New() (Reference, *T, bool, error) {
 		si := c.next
 		c.slots[si].rc = 1 // reset ref count to 1
 		c.next++
-		return pack(p.index, si), &c.slots[si].value, true, nil
+		return pack(p.index, si), &c.slots[si].value, true, true
 	}
 
+	return 0, nil, false, false
+}
+
+// newSlow handles chunk rollover, growth and overflow checks.
+func (p *Pool[T]) newSlow() (Reference, *T, bool, error) {
 	// next chunk
 	p.index++
 
 	// can use pre-allocated chunk?
 	if int(p.index) < len(p.chunks) {
-		c = p.chunks[p.index]
+		c := p.chunks[p.index]
 		c.slots[0].rc = 1 // reset ref count to 1
 		c.next = 1
 		return pack(p.index, 0), &c.slots[0].value, true, nil
@@ -122,7 +136,7 @@ func (p *Pool[T]) New() (Reference, *T, bool, error) {
 
 	// can allocate new chunk?
 	if p.index < maxChunks {
-		c = &chunk[T]{next: 1}
+		c := &chunk[T]{next: 1}
 		c.slots[0].rc = 1 // reset ref count to 1
 		p.chunks = append(p.chunks, c)
 		return pack(p.index, 0), &c.slots[0].value, true, nil
