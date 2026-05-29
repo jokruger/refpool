@@ -67,7 +67,7 @@ func main() {
 
 	p := refpool.New[node](4)
 
-	original, fresh := p.New()
+	original, _, fresh, _ := p.New()
 	fmt.Println(fresh)
 	p.Resolve(original).name = "root"
 

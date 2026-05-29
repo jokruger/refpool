@@ -16,6 +16,8 @@ import (
 	"math"
 )
 
+var ErrOverflow = fmt.Errorf("unable to allocate new resource: pool is full")
+
 // Reference is a handle to a value in the pool. 0 corresponds to invalid / nil reference.
 type Reference uint32
 
@@ -87,10 +89,9 @@ func New[T any](preAlloc int) *Pool[T] {
 }
 
 // New creates a new (or re-use free) reference to a value in the pool. The value is not initialized and should be set
-// by the caller. Panics if the pool is full (i.e. it cannot allocate new chunk), which is unlikely in practice since
-// this may happen only when there are 2^32 slots in use. Returns the reference and flag indicating whether the
-// reference is newly allocated (true) or re-used from free-list (false).
-func (p *Pool[T]) New(init T) (Reference, bool) {
+// by the caller. Returns the reference, value pointer, flag indicating whether the reference is newly allocated (true)
+// or re-used from free-list (false), and error.
+func (p *Pool[T]) New() (Reference, *T, bool, error) {
 	// re-use free slot if possible
 	if p.free != 0 {
 		r := p.free
@@ -98,18 +99,16 @@ func (p *Pool[T]) New(init T) (Reference, bool) {
 		s := &p.chunks[ci].slots[si]
 		p.free = s.nextFree // update free-list head
 		s.rc = 1            // reset ref count to 1
-		s.value = init      // set initial value
-		return r, false
+		return r, &s.value, false, nil
 	}
 
 	// use next slot in current chunk if possible
 	c := p.chunks[p.index]
 	if c.next < chunkSize {
 		si := c.next
-		c.slots[si].rc = 1       // reset ref count to 1
-		c.slots[si].value = init // set initial value
+		c.slots[si].rc = 1 // reset ref count to 1
 		c.next++
-		return pack(p.index, si), true
+		return pack(p.index, si), &c.slots[si].value, true, nil
 	}
 
 	// next chunk
@@ -118,23 +117,20 @@ func (p *Pool[T]) New(init T) (Reference, bool) {
 	// can use pre-allocated chunk?
 	if int(p.index) < len(p.chunks) {
 		c = p.chunks[p.index]
-		c.slots[0].rc = 1       // reset ref count to 1
-		c.slots[0].value = init // set initial value
+		c.slots[0].rc = 1 // reset ref count to 1
 		c.next = 1
-		return pack(p.index, 0), true
+		return pack(p.index, 0), &c.slots[0].value, true, nil
 	}
 
 	// can allocate new chunk?
 	if p.index < maxChunks {
 		c = &chunk[T]{next: 1}
-		c.slots[0].rc = 1       // reset ref count to 1
-		c.slots[0].value = init // set initial value
+		c.slots[0].rc = 1 // reset ref count to 1
 		p.chunks = append(p.chunks, c)
-		return pack(p.index, 0), true
+		return pack(p.index, 0), &c.slots[0].value, true, nil
 	}
 
-	// cannot allocate more chunks
-	panic(fmt.Errorf("Pool[%T] is full", p.zero))
+	return 0, nil, false, ErrOverflow
 }
 
 // Pin marks the resource as arena-live (provided reference must be valid). A pinned resource is not reclaimed when its
