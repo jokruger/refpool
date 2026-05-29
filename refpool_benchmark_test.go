@@ -30,7 +30,7 @@ func BenchmarkAllocateNewValues(b *testing.B) {
 		b.ResetTimer()
 
 		for i := range b.N {
-			r, _ := p.New(&benchmarkValue{a: i, b: i + 1, c: i + 2, d: i + 3})
+			r, _ := p.New(benchmarkValue{a: i, b: i + 1, c: i + 2, d: i + 3})
 			benchmarkReferenceSink[0] = r
 		}
 	})
@@ -62,9 +62,9 @@ func BenchmarkAccessValues(b *testing.B) {
 
 	b.Run("RefpoolResolve", func(b *testing.B) {
 		p := New[benchmarkValue](1)
-		r1, _ := p.New(&benchmarkValue{a: 1, b: 2, c: 3, d: 4})
-		r2, _ := p.New(&benchmarkValue{a: 1, b: 2, c: 3, d: 4})
-		r3, _ := p.New(&benchmarkValue{a: 1, b: 2, c: 3, d: 4})
+		r1, _ := p.New(benchmarkValue{a: 1, b: 2, c: 3, d: 4})
+		r2, _ := p.New(benchmarkValue{a: 1, b: 2, c: 3, d: 4})
+		r3, _ := p.New(benchmarkValue{a: 1, b: 2, c: 3, d: 4})
 
 		b.ReportAllocs()
 		b.ResetTimer()
