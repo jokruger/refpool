@@ -36,6 +36,8 @@ func BenchmarkAllocateNewValues(b *testing.B) {
 			refs[i] = 0
 		}
 		p := refpool.New[Value](pa)
+		p.SetZeroOnRelease(false)
+		p.SetZeroOnRelease(false)
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := range b.N {

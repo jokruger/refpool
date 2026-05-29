@@ -212,6 +212,19 @@ func TestReleaseClearsPointerValues(t *testing.T) {
 	}
 }
 
+func TestReleaseCanKeepValueWhenZeroOnReleaseDisabled(t *testing.T) {
+	p := New[*int](0).SetZeroOnRelease(false)
+
+	v := 42
+	r, _, _ := p.New()
+	*p.Resolve(r) = &v
+
+	p.Release(r)
+	if got := *p.Resolve(r); got != &v {
+		t.Fatalf("released pointer value = %v, want %v", got, &v)
+	}
+}
+
 func TestAllocationAcrossChunkBoundary(t *testing.T) {
 	p := New[int](chunkSize)
 
@@ -418,5 +431,26 @@ func TestResetFullClearsDroppedChunkPointers(t *testing.T) {
 		if chunksBackingArray[i] != nil {
 			t.Fatalf("dropped chunk pointer at backing index %d was not cleared", i)
 		}
+	}
+}
+
+func TestResetCanKeepValuesWhenZeroOnResetDisabled(t *testing.T) {
+	p := New[*int](1).SetZeroOnReset(false)
+
+	v := 42
+	r, _, _ := p.New()
+	*p.Resolve(r) = &v
+
+	p.Reset()
+
+	r2, _, ok := p.New()
+	if !ok {
+		t.Fatal("New after Reset returned ok=false, want true")
+	}
+	if r2 != pack(0, 0) {
+		t.Fatalf("first reference after Reset = %#x, want %#x", r2, pack(0, 0))
+	}
+	if got := *p.Resolve(r2); got != &v {
+		t.Fatalf("value after Reset with zeroing disabled = %v, want %v", got, &v)
 	}
 }

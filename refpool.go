@@ -20,12 +20,14 @@ type Reference uint32
 
 // Pool of reference-counted values.
 type Pool[T any] struct {
-	chunks     []*chunk[T] // allocated chunks
-	current    *chunk[T]   // currently active chunk (same as chunks[index])
-	index      uint32      // current chunk in use
-	free       Reference   // free-list head
-	baseChunks uint32      // number of pre-allocated chunks calculated when new Pool was created
-	zero       T           // zero value of T for value reset and panic messages
+	chunks        []*chunk[T] // allocated chunks
+	current       *chunk[T]   // currently active chunk (same as chunks[index])
+	index         uint32      // current chunk in use
+	free          Reference   // free-list head
+	baseChunks    uint32      // number of pre-allocated chunks calculated when new Pool was created
+	zero          T           // zero value of T for value reset
+	zeroOnRelease bool        // whether Release should reset value to zero
+	zeroOnReset   bool        // whether Reset should reset values to zero
 }
 
 // Slot index occupies high bits of a reference. Chunk index occupies low bits of a reference and is encoded as
@@ -81,6 +83,8 @@ func New[T any](preAlloc int) *Pool[T] {
 	// store baseChunks for future use in ResetFull
 	p.baseChunks = uint32(cs)
 	p.current = p.chunks[0]
+	p.zeroOnRelease = true
+	p.zeroOnReset = true
 
 	return p
 }
@@ -180,10 +184,26 @@ func (p *Pool[T]) Release(r Reference) {
 		if s.rc == 0 {
 			// add to free-list if ref count reached zero
 			s.nextFree = p.free
-			s.value = p.zero // reset value to zero for safety and GC
+			if p.zeroOnRelease {
+				s.value = p.zero // reset value to zero for safety and GC
+			}
 			p.free = r
 		}
 	}
+}
+
+// SetZeroOnRelease configures whether Release should reset value to the zero value of T when ref count reaches zero.
+// The default is true.
+func (p *Pool[T]) SetZeroOnRelease(enabled bool) *Pool[T] {
+	p.zeroOnRelease = enabled
+	return p
+}
+
+// SetZeroOnReset configures whether Reset should reset values to the zero value of T.
+// The default is true.
+func (p *Pool[T]) SetZeroOnReset(enabled bool) *Pool[T] {
+	p.zeroOnReset = enabled
+	return p
 }
 
 // Resolve returns a pointer to the value associated with the reference (provided reference must be valid). The returned
@@ -197,11 +217,13 @@ func (p *Pool[T]) Resolve(r Reference) *T {
 // Reset clears all allocated values and makes the pool ready for the next cycle. It keeps all currently allocated
 // resources for reuse.
 func (p *Pool[T]) Reset() {
-	// set values to zero to release potentially held resources
+	// set values to zero to release potentially held resources when enabled
 	for ci := uint32(0); ci <= p.index; ci++ {
 		c := p.chunks[ci]
-		for i := uint16(0); i < c.next; i++ {
-			c.slots[i].value = p.zero
+		if p.zeroOnReset {
+			for i := uint16(0); i < c.next; i++ {
+				c.slots[i].value = p.zero
+			}
 		}
 		c.next = 0 // reset chunk to initial state
 	}

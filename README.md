@@ -39,13 +39,17 @@ the original owner. Each retained reference must eventually be matched by a
 
 `Release` decrements the reference count. When the count reaches zero, the value
 is reset to the zero value of `T` and the slot is added to the free-list for
-reuse.
+reuse. This zeroing is enabled by default and can be disabled per pool with
+`SetZeroOnRelease(false)` for throughput-focused workloads.
 
 `Pin` marks a value as pool-owned until the next reset. Pinned values are not
 reference-counted, so `Retain` and `Release` have no effect on them. Values are
 also pinned automatically if the reference count reaches `math.MaxUint32`.
 
 `Reset` clears all currently allocated values and keeps all chunks for reuse.
+Reset zeroing is enabled by default and can be disabled per pool with
+`SetZeroOnReset(false)` for throughput-focused workloads that can tolerate value
+retention between reset cycles.
 `ResetFull` also drops chunks allocated after pool creation. After either reset,
 old references must not be used until their slots are allocated again by `New`.
 
@@ -55,41 +59,41 @@ old references must not be used until their slots are allocated again by `New`.
 package main
 
 import (
-	"fmt"
+  "fmt"
 
-	"github.com/jokruger/refpool"
+  "github.com/jokruger/refpool"
 )
 
 type Object struct {
-	Name string
+  Name string
 }
 
 func main() {
-	pool := refpool.New[Object](1024)
+  pool := refpool.New[Object](1024)
 
-	ref, obj, ok := pool.New()
-	if !ok {
-		panic("refpool overflow")
-	}
-	obj.Name = "alpha"
+  ref, obj, ok := pool.New()
+  if !ok {
+    panic("refpool overflow")
+  }
+  obj.Name = "alpha"
 
-	// Logical copy: retain once per extra owner.
-	pool.Retain(ref)
+  // Logical copy: retain once per extra owner.
+  pool.Retain(ref)
 
-	// Resolve by handle when needed.
-	fmt.Println(pool.Resolve(ref).Name) // alpha
+  // Resolve by handle when needed.
+  fmt.Println(pool.Resolve(ref).Name) // alpha
 
-	// Release all owners.
-	pool.Release(ref)
-	pool.Release(ref)
+  // Release all owners.
+  pool.Release(ref)
+  pool.Release(ref)
 
-	// Slot can now be reused.
-	reusedRef, reusedObj, ok := pool.New()
-	if !ok {
-		panic("refpool overflow")
-	}
-	reusedObj.Name = "beta"
-	fmt.Println(reusedRef == ref) // often true (free-list reuse)
+  // Slot can now be reused.
+  reusedRef, reusedObj, ok := pool.New()
+  if !ok {
+    panic("refpool overflow")
+  }
+  reusedObj.Name = "beta"
+  fmt.Println(reusedRef == ref) // often true (free-list reuse)
 }
 ```
 
