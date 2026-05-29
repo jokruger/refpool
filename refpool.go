@@ -70,12 +70,12 @@ func New[T any](preAlloc int) *Pool[T] {
 	}
 	cs = max(1, cs)
 
-	// allocate chunks slice with extra buffer for future growth
-	p := &Pool[T]{chunks: make([]*chunk[T], 0, max(cs, minChunks))}
+	// allocate chunks slice with exact initial length and extra buffer for future growth
+	p := &Pool[T]{chunks: make([]*chunk[T], cs, max(cs, minChunks))}
 
 	// pre-allocate chunks
-	for range cs {
-		p.chunks = append(p.chunks, &chunk[T]{})
+	for i := range p.chunks {
+		p.chunks[i] = &chunk[T]{}
 	}
 
 	// store baseChunks for future use in ResetFull
