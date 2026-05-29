@@ -157,13 +157,13 @@ func (p *Pool[T]) Pin(r Reference) {
 // it pins the resource to prevent overflow and potential bugs.
 func (p *Pool[T]) Retain(r Reference) {
 	ci, si := unpack(r)
-	c := p.chunks[ci]
-	if c.slots[si].rc > 0 {
+	s := &p.chunks[ci].slots[si]
+	if s.rc > 0 {
 		// ref count only if resource is not pinned
-		c.slots[si].rc++
-		if c.slots[si].rc == math.MaxUint32 {
+		s.rc++
+		if s.rc == math.MaxUint32 {
 			// if ref count reached max value, pin the resource to prevent overflow and potential bugs
-			c.slots[si].rc = 0
+			s.rc = 0
 		}
 	}
 }
@@ -173,14 +173,14 @@ func (p *Pool[T]) Retain(r Reference) {
 // resource to the free-list for future reuse.
 func (p *Pool[T]) Release(r Reference) {
 	ci, si := unpack(r)
-	c := p.chunks[ci]
-	if c.slots[si].rc > 0 {
+	s := &p.chunks[ci].slots[si]
+	if s.rc > 0 {
 		// ref count only if resource is not pinned
-		c.slots[si].rc--
-		if c.slots[si].rc == 0 {
+		s.rc--
+		if s.rc == 0 {
 			// add to free-list if ref count reached zero
-			c.slots[si].nextFree = p.free
-			c.slots[si].value = p.zero // reset value to zero for safety and GC
+			s.nextFree = p.free
+			s.value = p.zero // reset value to zero for safety and GC
 			p.free = r
 		}
 	}
