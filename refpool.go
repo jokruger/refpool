@@ -16,14 +16,14 @@ import (
 )
 
 // Reference is a handle to a value in the pool. 0 corresponds to invalid / nil reference.
-type Reference uint32
+type Reference uint64
 
 // Pool of reference-counted values.
 type Pool[T any] struct {
 	chunks        []*chunk[T] // allocated chunks
 	current       *chunk[T]   // currently active chunk (same as chunks[index])
-	index         uint32      // current chunk in use
 	free          Reference   // free-list head
+	index         uint32      // current chunk in use
 	baseChunks    uint32      // number of pre-allocated chunks calculated when new Pool was created
 	zero          T           // zero value of T for value reset
 	zeroOnRelease bool        // whether Release should reset value to zero
@@ -32,35 +32,31 @@ type Pool[T any] struct {
 
 // Slot index occupies high bits of a reference. Chunk index occupies low bits of a reference and is encoded as
 // actual value + 1 which makes Reference = 0 invalid (not pointing to any slot).
-const siBits = 8                            // number of bits for slot index (must be less than 16)
-const siMask = uint16((1 << siBits) - 1)    // mask for slot index
-const ciBits = 32 - siBits                  // number of bits for chunk index
-const ciMask = Reference((1 << ciBits) - 1) // mask for chunk index
-const chunkSize = 1 << siBits               // number of slots per chunk
-const minChunks = 32                        // min size of chunks slice
-const maxChunks = (1 << ciBits) - 1         // max number of chunks
+const chunkSize = 256                // number of slots per chunk
+const minChunks = 32                 // min size of chunks slice
+const maxChunks = math.MaxUint32 - 1 // max number of chunks
 
 // Chunk of slots for storing values.
 type chunk[T any] struct {
 	slots [chunkSize]slot[T] // fixed-size array of slots
-	next  uint16             // next free slot index in the chunk (if all slots are used, next is set to chunkSize)
+	next  uint32             // next free slot index in the chunk (if all slots are used, next is set to chunkSize)
 }
 
 // Single value slot.
 type slot[T any] struct {
-	rc       uint32    // reference count (0 = slot is not used yet, or it is used but should not be reference counted)
-	nextFree Reference // next unused reference in free-list
 	value    T         // value stored in the slot
+	nextFree Reference // next unused reference in free-list
+	rc       uint32    // reference count (0 = slot is not used yet, or it is used but should not be reference counted)
 }
 
 // Assemble a reference from chunk index and slot index.
-func pack(ci uint32, si uint16) Reference {
-	return Reference(si&siMask)<<ciBits | Reference(ci+1)
+func pack(ci uint32, si uint32) Reference {
+	return Reference(ci+1) | Reference(si)<<32
 }
 
 // Disassemble a reference into chunk index and slot index. Reference must be valid (not zero).
-func unpack(r Reference) (uint32, uint16) {
-	return uint32(r&ciMask) - 1, uint16(r >> ciBits)
+func unpack(r Reference) (uint32, uint32) {
+	return uint32(r) - 1, uint32(r >> 32)
 }
 
 // New creates a new typed pool with at least `preAlloc` pre-allocated values.
@@ -221,7 +217,7 @@ func (p *Pool[T]) Reset() {
 	for ci := uint32(0); ci <= p.index; ci++ {
 		c := p.chunks[ci]
 		if p.zeroOnReset {
-			for i := uint16(0); i < c.next; i++ {
+			for i := uint32(0); i < c.next; i++ {
 				c.slots[i].value = p.zero
 			}
 		}
