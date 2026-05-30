@@ -43,6 +43,34 @@ func TestPackNeverReturnsZero(t *testing.T) {
 	}
 }
 
+func TestPackUsesExpectedLayout(t *testing.T) {
+	r := pack(0, 1)
+	want := Reference(1)<<32 | 1
+	if r != want {
+		t.Fatalf("pack(0, 1) = %#x, want %#x", r, want)
+	}
+
+	ci, si := unpack(r)
+	if ci != 0 || si != 1 {
+		t.Fatalf("unpack(pack(0, 1)) = (%d, %d), want (0, 1)", ci, si)
+	}
+}
+
+func TestPackMaxValidValues(t *testing.T) {
+	ci := uint32(maxChunks - 1)
+	si := uint32(chunkSize - 1)
+
+	r := pack(ci, si)
+	if r == 0 {
+		t.Fatal("pack(max valid values) must not return 0")
+	}
+
+	gotCI, gotSI := unpack(r)
+	if gotCI != ci || gotSI != si {
+		t.Fatalf("round-trip failed for max valid values: packed=%#x, unpacked=(%d, %d)", r, gotCI, gotSI)
+	}
+}
+
 func TestNewResolveReleaseAndReuse(t *testing.T) {
 	p := New[string](0)
 
