@@ -219,9 +219,20 @@ func (p *Pool[T]) Resolve(r Reference) *T {
 	return &p.chunks[ci].slots[si].value
 }
 
-// Reset clears all allocated values and makes the pool ready for the next cycle. It keeps all currently allocated
-// resources for reuse.
-func (p *Pool[T]) Reset() {
+// Reset clears all allocated values and makes the pool ready for the next cycle.
+// If full == true, it drops all resources allocated after pool creation, leaving only the base pre-allocated resources.
+// If full == false, it keeps all currently allocated resources for reuse.
+func (p *Pool[T]) Reset(full bool) {
+	if full {
+		// reset tail pointers to nil to release resources allocated after pool creation
+		for i := p.baseChunks; i < uint32(len(p.chunks)); i++ {
+			p.chunks[i] = nil
+		}
+		p.chunks = p.chunks[:p.baseChunks]     // drop all chunks allocated after pool creation (if any)
+		p.index = min(p.index, p.baseChunks-1) // adjust index so Reset can safely clear all remaining chunks
+		p.current = p.chunks[p.index]
+	}
+
 	// set values to zero to release potentially held resources when enabled
 	for ci := uint32(0); ci <= p.index; ci++ {
 		c := p.chunks[ci]
@@ -237,17 +248,4 @@ func (p *Pool[T]) Reset() {
 	p.index = 0
 	p.current = p.chunks[0]
 	p.free = 0
-}
-
-// ResetFull clears all allocated values and makes the pool ready for the next cycle. It drops resources allocated
-// after pool creation, leaving only the base pre-allocated resources.
-func (p *Pool[T]) ResetFull() {
-	// reset tail pointers to nil to release resources allocated after pool creation
-	for i := p.baseChunks; i < uint32(len(p.chunks)); i++ {
-		p.chunks[i] = nil
-	}
-	p.chunks = p.chunks[:p.baseChunks]     // drop all chunks allocated after pool creation (if any)
-	p.index = min(p.index, p.baseChunks-1) // adjust index so Reset can safely clear all remaining chunks
-	p.current = p.chunks[p.index]
-	p.Reset()
 }

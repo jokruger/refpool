@@ -327,7 +327,7 @@ func TestResetKeepsAllocatedChunks(t *testing.T) {
 	}
 
 	p.Release(last)
-	p.Reset()
+	p.Reset(false)
 
 	if len(p.chunks) != 2 {
 		t.Fatalf("len(p.chunks) after Reset = %d, want 2", len(p.chunks))
@@ -366,7 +366,7 @@ func TestResetFullShrinksToBaseChunks(t *testing.T) {
 		t.Fatalf("len(p.chunks) before ResetFull = %d, want 3", len(p.chunks))
 	}
 
-	p.ResetFull()
+	p.Reset(true)
 
 	if len(p.chunks) != int(p.baseChunks) {
 		t.Fatalf("len(p.chunks) after ResetFull = %d, want %d", len(p.chunks), p.baseChunks)
@@ -400,7 +400,7 @@ func TestResetFullClearsDroppedChunkPointers(t *testing.T) {
 		t.Fatalf("len(p.chunks) before ResetFull = %d, want 2", len(p.chunks))
 	}
 
-	p.ResetFull()
+	p.Reset(true)
 
 	chunksBackingArray := p.chunks[:cap(p.chunks)]
 	for i := int(p.baseChunks); i < len(chunksBackingArray); i++ {
@@ -417,7 +417,7 @@ func TestResetCanKeepValuesWhenZeroOnResetDisabled(t *testing.T) {
 	r, _, _ := p.New()
 	*p.Resolve(r) = &v
 
-	p.Reset()
+	p.Reset(false)
 
 	r2, _, ok := p.New()
 	if !ok {
