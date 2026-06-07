@@ -16,7 +16,7 @@ import (
 )
 
 // Reference is a handle to a value in the pool. 0 corresponds to invalid / nil reference.
-type Reference uint64
+type Reference = uint64
 
 // Options for Pool configuration.
 type Options struct {
