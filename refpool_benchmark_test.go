@@ -35,7 +35,7 @@ func BenchmarkAllocateNewValues(b *testing.B) {
 		for i := range sz {
 			refs[i] = 0
 		}
-		p := refpool.New[Value](pa)
+		p := refpool.New[Value](pa, nil)
 		p.SetZeroOnRelease(false)
 		p.SetZeroOnReset(false)
 		b.ReportAllocs()
@@ -70,7 +70,7 @@ func BenchmarkAccessValues(b *testing.B) {
 	})
 
 	b.Run("RefpoolResolve", func(b *testing.B) {
-		p := refpool.New[Value](pa)
+		p := refpool.New[Value](pa, nil)
 		for i := range sz {
 			r, v, _ := p.New()
 			*v = Value{a: i, b: i + 1, c: i + 2, d: i + 3}

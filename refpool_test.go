@@ -72,7 +72,7 @@ func TestPackMaxValidValues(t *testing.T) {
 }
 
 func TestNewResolveReleaseAndReuse(t *testing.T) {
-	p := New[string](0)
+	p := New[string](0, nil)
 
 	r, _, ok := p.New()
 	if !ok {
@@ -105,7 +105,7 @@ func TestNewResolveReleaseAndReuse(t *testing.T) {
 }
 
 func TestRetainRequiresMatchingReleases(t *testing.T) {
-	p := New[int](0)
+	p := New[int](0, nil)
 
 	r, _, _ := p.New()
 	*p.Resolve(r) = 42
@@ -135,7 +135,7 @@ func TestRetainRequiresMatchingReleases(t *testing.T) {
 }
 
 func TestPinPreventsReleaseAndRetainEffects(t *testing.T) {
-	p := New[string](0)
+	p := New[string](0, nil)
 
 	r, _, _ := p.New()
 	*p.Resolve(r) = "pinned"
@@ -157,7 +157,7 @@ func TestPinPreventsReleaseAndRetainEffects(t *testing.T) {
 }
 
 func TestRetainMaxRefCountPinsSlot(t *testing.T) {
-	p := New[int](0)
+	p := New[int](0, nil)
 
 	r, _, _ := p.New()
 	ci, si := unpack(r)
@@ -176,7 +176,7 @@ func TestRetainMaxRefCountPinsSlot(t *testing.T) {
 }
 
 func TestReleaseClearsPointerValues(t *testing.T) {
-	p := New[*int](0)
+	p := New[*int](0, nil)
 
 	v := 42
 	r, _, _ := p.New()
@@ -189,7 +189,7 @@ func TestReleaseClearsPointerValues(t *testing.T) {
 }
 
 func TestReleaseCanKeepValueWhenZeroOnReleaseDisabled(t *testing.T) {
-	p := New[*int](0).SetZeroOnRelease(false)
+	p := New[*int](0, nil).SetZeroOnRelease(false)
 
 	v := 42
 	r, _, _ := p.New()
@@ -202,7 +202,7 @@ func TestReleaseCanKeepValueWhenZeroOnReleaseDisabled(t *testing.T) {
 }
 
 func TestAllocationAcrossChunkBoundary(t *testing.T) {
-	p := New[int](chunkSize)
+	p := New[int](chunkSize, nil)
 
 	var refs []Reference
 	for range chunkSize + 2 {
@@ -231,7 +231,7 @@ func TestAllocationAcrossChunkBoundary(t *testing.T) {
 }
 
 func TestReuseFollowsFreeListLIFO(t *testing.T) {
-	p := New[int](0)
+	p := New[int](0, nil)
 
 	r1, _, ok := p.New()
 	if !ok {
@@ -302,7 +302,7 @@ func TestNewStoresBaseChunks(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		p := New[int](c.preAlloc)
+		p := New[int](c.preAlloc, nil)
 		if p.baseChunks != c.want {
 			t.Errorf("New(%d).baseChunks = %d, want %d", c.preAlloc, p.baseChunks, c.want)
 		}
@@ -313,7 +313,7 @@ func TestNewStoresBaseChunks(t *testing.T) {
 }
 
 func TestResetKeepsAllocatedChunks(t *testing.T) {
-	p := New[int](1)
+	p := New[int](1, nil)
 
 	var last Reference
 	for range chunkSize + 1 {
@@ -352,7 +352,7 @@ func TestResetKeepsAllocatedChunks(t *testing.T) {
 }
 
 func TestResetFullShrinksToBaseChunks(t *testing.T) {
-	p := New[int](chunkSize + 1)
+	p := New[int](chunkSize+1, nil)
 
 	for range (2 * chunkSize) + 1 {
 		r, _, _ := p.New()
@@ -388,7 +388,7 @@ func TestResetFullShrinksToBaseChunks(t *testing.T) {
 }
 
 func TestResetFullClearsDroppedChunkPointers(t *testing.T) {
-	p := New[*int](1)
+	p := New[*int](1, nil)
 
 	v := 42
 	for range chunkSize + 1 {
@@ -411,7 +411,7 @@ func TestResetFullClearsDroppedChunkPointers(t *testing.T) {
 }
 
 func TestResetCanKeepValuesWhenZeroOnResetDisabled(t *testing.T) {
-	p := New[*int](1).SetZeroOnReset(false)
+	p := New[*int](1, nil).SetZeroOnReset(false)
 
 	v := 42
 	r, _, _ := p.New()

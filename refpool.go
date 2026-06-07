@@ -18,16 +18,21 @@ import (
 // Reference is a handle to a value in the pool. 0 corresponds to invalid / nil reference.
 type Reference uint64
 
+// Options for Pool configuration.
+type Options struct {
+	ZeroOnRelease bool // whether Release should reset value to zero
+	ZeroOnReset   bool // whether Reset should reset values to zero
+}
+
 // Pool of reference-counted values.
 type Pool[T any] struct {
-	chunks        []*chunk[T] // allocated chunks
-	current       *chunk[T]   // currently active chunk (same as chunks[index])
-	free          Reference   // free-list head
-	index         uint32      // current chunk in use
-	baseChunks    uint32      // number of pre-allocated chunks calculated when new Pool was created
-	zero          T           // zero value of T for value reset
-	zeroOnRelease bool        // whether Release should reset value to zero
-	zeroOnReset   bool        // whether Reset should reset values to zero
+	chunks     []*chunk[T] // allocated chunks
+	current    *chunk[T]   // currently active chunk (same as chunks[index])
+	free       Reference   // free-list head
+	index      uint32      // current chunk in use
+	baseChunks uint32      // number of pre-allocated chunks calculated when new Pool was created
+	zero       T           // zero value of T for value reset
+	opts       Options     // pool options
 }
 
 // Slot index occupies high bits of a reference. Chunk index occupies low bits of a reference and is encoded as
@@ -60,7 +65,7 @@ func unpack(r Reference) (uint32, uint32) {
 }
 
 // New creates a new typed pool with at least `preAlloc` pre-allocated values.
-func New[T any](preAlloc int) *Pool[T] {
+func New[T any](preAlloc int, opts *Options) *Pool[T] {
 	// calc how many chunks we need to pre-allocate
 	cs := preAlloc / chunkSize
 	if preAlloc%chunkSize != 0 {
@@ -79,8 +84,12 @@ func New[T any](preAlloc int) *Pool[T] {
 	// store baseChunks for future use in ResetFull
 	p.baseChunks = uint32(cs)
 	p.current = p.chunks[0]
-	p.zeroOnRelease = true
-	p.zeroOnReset = true
+
+	p.opts.ZeroOnRelease = true
+	p.opts.ZeroOnReset = true
+	if opts != nil {
+		p.opts = *opts
+	}
 
 	return p
 }
@@ -180,7 +189,7 @@ func (p *Pool[T]) Release(r Reference) {
 		if s.rc == 0 {
 			// add to free-list if ref count reached zero
 			s.nextFree = p.free
-			if p.zeroOnRelease {
+			if p.opts.ZeroOnRelease {
 				s.value = p.zero // reset value to zero for safety and GC
 			}
 			p.free = r
@@ -191,14 +200,14 @@ func (p *Pool[T]) Release(r Reference) {
 // SetZeroOnRelease configures whether Release should reset value to the zero value of T when ref count reaches zero.
 // The default is true.
 func (p *Pool[T]) SetZeroOnRelease(enabled bool) *Pool[T] {
-	p.zeroOnRelease = enabled
+	p.opts.ZeroOnRelease = enabled
 	return p
 }
 
 // SetZeroOnReset configures whether Reset should reset values to the zero value of T.
 // The default is true.
 func (p *Pool[T]) SetZeroOnReset(enabled bool) *Pool[T] {
-	p.zeroOnReset = enabled
+	p.opts.ZeroOnReset = enabled
 	return p
 }
 
@@ -216,7 +225,7 @@ func (p *Pool[T]) Reset() {
 	// set values to zero to release potentially held resources when enabled
 	for ci := uint32(0); ci <= p.index; ci++ {
 		c := p.chunks[ci]
-		if p.zeroOnReset {
+		if p.opts.ZeroOnReset {
 			for i := uint32(0); i < c.next; i++ {
 				c.slots[i].value = p.zero
 			}
