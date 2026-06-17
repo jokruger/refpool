@@ -94,6 +94,21 @@ func New[T any](preAlloc int, opts *Options) *Pool[T] {
 	return p
 }
 
+func (p *Pool[T]) Stats() (allocated, used, free int) {
+	allocated = int(p.index+1) * chunkSize
+	used = int(p.index)*chunkSize + int(p.current.next)
+	free = 0
+
+	i := p.free
+	for i != 0 {
+		free++
+		ci, si := unpack(i)
+		i = p.chunks[ci].slots[si].nextFree
+	}
+
+	return allocated, used, free
+}
+
 // New creates a new (or re-use free) reference to a value in the pool. The value is not initialized and should be set
 // by the caller. Returns the reference, value pointer, and flag indicating whether allocation was successful.
 func (p *Pool[T]) New() (Reference, *T, bool) {
