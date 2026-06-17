@@ -430,3 +430,84 @@ func TestResetCanKeepValuesWhenZeroOnResetDisabled(t *testing.T) {
 		t.Fatalf("value after Reset with zeroing disabled = %v, want %v", got, &v)
 	}
 }
+
+func TestStatsSemantics(t *testing.T) {
+	p := New[int](2*chunkSize, nil)
+
+	allocated, used, free := p.Stats()
+	if allocated != 2*chunkSize || used != 0 || free != 0 {
+		t.Fatalf("initial stats = (%d, %d, %d), want (%d, 0, 0)", allocated, used, free, 2*chunkSize)
+	}
+
+	r1, _, _ := p.New()
+	r2, _, _ := p.New()
+	r3, _, _ := p.New()
+
+	allocated, used, free = p.Stats()
+	if allocated != 2*chunkSize || used != 3 || free != 0 {
+		t.Fatalf("after 3 allocations stats = (%d, %d, %d), want (%d, 3, 0)", allocated, used, free, 2*chunkSize)
+	}
+
+	p.Release(r1)
+	p.Release(r2)
+
+	allocated, used, free = p.Stats()
+	if allocated != 2*chunkSize || used != 3 || free != 2 {
+		t.Fatalf("after releasing 2 refs stats = (%d, %d, %d), want (%d, 3, 2)", allocated, used, free, 2*chunkSize)
+	}
+
+	// Reusing free-list slots must not increase used because no new slot was allocated.
+	if _, _, ok := p.New(); !ok {
+		t.Fatal("reuse New returned ok=false, want true")
+	}
+	if _, _, ok := p.New(); !ok {
+		t.Fatal("reuse New returned ok=false, want true")
+	}
+
+	allocated, used, free = p.Stats()
+	if allocated != 2*chunkSize || used != 3 || free != 0 {
+		t.Fatalf("after reusing free refs stats = (%d, %d, %d), want (%d, 3, 0)", allocated, used, free, 2*chunkSize)
+	}
+
+	// Allocating a new slot increments used.
+	if _, _, ok := p.New(); !ok {
+		t.Fatal("New after free-list reuse returned ok=false, want true")
+	}
+
+	allocated, used, free = p.Stats()
+	if allocated != 2*chunkSize || used != 4 || free != 0 {
+		t.Fatalf("after allocating one new slot stats = (%d, %d, %d), want (%d, 4, 0)", allocated, used, free, 2*chunkSize)
+	}
+
+	// Keep r3 live to ensure active references are part of used.
+	if *p.Resolve(r3) != 0 {
+		t.Fatalf("unexpected value at live reference %#x", r3)
+	}
+}
+
+func TestStatsUsedAcrossChunkBoundaryIncludesFree(t *testing.T) {
+	p := New[int](0, nil)
+
+	refs := make([]Reference, 0, chunkSize+1)
+	for range chunkSize + 1 {
+		r, _, ok := p.New()
+		if !ok {
+			t.Fatal("New returned ok=false across chunk boundary")
+		}
+		refs = append(refs, r)
+	}
+
+	allocated, used, free := p.Stats()
+	if allocated != 2*chunkSize || used != chunkSize+1 || free != 0 {
+		t.Fatalf("after crossing chunk boundary stats = (%d, %d, %d), want (%d, %d, 0)", allocated, used, free, 2*chunkSize, chunkSize+1)
+	}
+
+	for i := 0; i < 3; i++ {
+		p.Release(refs[i])
+	}
+
+	allocated, used, free = p.Stats()
+	if allocated != 2*chunkSize || used != chunkSize+1 || free != 3 {
+		t.Fatalf("after releases stats = (%d, %d, %d), want (%d, %d, 3)", allocated, used, free, 2*chunkSize, chunkSize+1)
+	}
+}

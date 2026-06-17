@@ -95,7 +95,7 @@ func New[T any](preAlloc int, opts *Options) *Pool[T] {
 }
 
 func (p *Pool[T]) Stats() (allocated, used, free int) {
-	allocated = int(p.index+1) * chunkSize
+	allocated = len(p.chunks) * chunkSize
 	used = int(p.index)*chunkSize + int(p.current.next)
 	free = 0
 
