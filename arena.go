@@ -8,23 +8,25 @@ import (
 type Arena struct {
 	pools         [256]typePool
 	zeroOnRelease bool // whether Release should reset value to zero
+	zeroOnReset   bool // whether Reset should reset values to zero
 }
 
 type typePool struct {
-	alloc  func() unsafe.Pointer    // allocate typed buffer and return base pointer
-	reset  func(ptr unsafe.Pointer) // reset a value to zero
-	elemSz uintptr                  // element size for pointer arithmetic
+	chunks  []*typeChunk // allocated chunks
+	current *typeChunk   // currently active chunk (same as chunks[index])
+	free    Reference    // free-list head
+	index   uint32       // current chunk index for linear bump allocation
+	base    uint32       // number of pre-allocated chunks calculated when new pool was created
 
-	chunks []*typeChunk // allocated chunks
-	free   Reference    // free-list head
-	index  uint32       // current chunk index for linear bump allocation
-	base   uint32       // number of pre-allocated chunks calculated when new pool was created
+	alloc func() unsafe.Pointer    // allocate typed buffer and return base pointer
+	reset func(ptr unsafe.Pointer) // reset a value to zero
+	esz   uintptr                  // element size for pointer arithmetic
 }
 
 type typeChunk struct {
 	base  unsafe.Pointer      // base pointer to first value in typed buffer
-	next  uint32              // next uninitialized slot for linear bump allocation
 	slots [chunkSize]typeSlot // fixed-size array of slots
+	next  uint32              // next uninitialized slot for linear bump allocation
 }
 
 type typeSlot struct {
@@ -39,31 +41,26 @@ func allocBuffer[T any]() unsafe.Pointer {
 }
 
 func resetPtr[T any](ptr unsafe.Pointer) {
-	*(*T)(ptr) = *new(T)
+	var zero T
+	*(*T)(ptr) = zero
 }
 
-func NewArena(opts ...func(*Arena)) *Arena {
-	a := &Arena{zeroOnRelease: true}
-	for _, opt := range opts {
-		opt(a)
+func NewArena(zeroOnRelease, zeroOnReset bool, types ...func(*Arena)) *Arena {
+	a := &Arena{zeroOnRelease: zeroOnRelease, zeroOnReset: zeroOnReset}
+	for _, wt := range types {
+		wt(a)
 	}
 	return a
 }
 
-func WithZeroOnRelease(flag bool) func(*Arena) {
-	return func(a *Arena) {
-		a.zeroOnRelease = flag
-	}
-}
-
 func With[T any](pool Type, preAlloc int) func(*Arena) {
-	var zero T
-
 	return func(a *Arena) {
 		p := &a.pools[pool]
 		p.alloc = allocBuffer[T]
 		p.reset = resetPtr[T]
-		p.elemSz = unsafe.Sizeof(zero)
+
+		var zero T
+		p.esz = unsafe.Sizeof(zero)
 
 		// calc how many chunks we need to pre-allocate
 		cs := preAlloc / chunkSize
@@ -72,22 +69,24 @@ func With[T any](pool Type, preAlloc int) func(*Arena) {
 		}
 		cs = max(1, cs)
 
-		// init pool
+		// allocate chunks slice with exact initial length and extra buffer for future growth
 		p.base = uint32(cs)
-		p.chunks = make([]*typeChunk, 0, max(cs, minChunks))
-		for range cs {
-			a.grow(p)
+		p.chunks = make([]*typeChunk, cs, max(cs, minChunks))
+
+		// pre-allocate chunks
+		for i := range p.chunks {
+			p.chunks[i] = &typeChunk{base: p.alloc()}
 		}
+		p.current = p.chunks[0]
 	}
 }
 
 // Stats returns the current pool stats.
-func (a *Arena) Stats(pool Type) (allocated, free int) {
+func (a *Arena) Stats(pool Type) (allocated, used, free int) {
 	p := &a.pools[pool]
 
 	allocated = len(p.chunks) * chunkSize
-
-	// Free-list slots are reusable slots returned by Release.
+	used = int(p.index)*chunkSize + int(p.current.next)
 	free = 0
 
 	i := p.free
@@ -97,55 +96,68 @@ func (a *Arena) Stats(pool Type) (allocated, free int) {
 		i = p.chunks[ci].slots[si].nextFree
 	}
 
-	// Add still-uninitialized slots in each chunk managed by linear bump allocation.
-	for _, c := range p.chunks {
-		free += int(chunkSize - c.next)
-	}
-
-	return allocated, free
+	return allocated, used, free
 }
 
 // New creates a new (or re-use free) reference to a value in the pool. The value is not initialized and should be set
 // by the caller. Returns the reference, value pointer and flag indicating whether allocation was successful.
 func (a *Arena) New(pool Type) (Reference, unsafe.Pointer, bool) {
 	p := &a.pools[pool]
+	if r, v, ok := a.newFast(p); ok {
+		return r, v, true
+	}
+	return a.newSlow(p)
+}
 
-	// Reuse a released slot first.
+func (a *Arena) newFast(p *typePool) (Reference, unsafe.Pointer, bool) {
+	// re-use free slot if possible
 	if p.free != 0 {
 		r := p.free
 		ci, si := unpack(r)
 		c := p.chunks[ci]
 		s := &c.slots[si]
-		p.free = s.nextFree
-		s.rc = 1 // reset ref count to 1
-		v := unsafe.Add(c.base, uintptr(si)*p.elemSz)
+		p.free = s.nextFree // update free-list head
+		s.rc = 1            // reset ref count to 1
+		v := unsafe.Add(c.base, uintptr(si)*p.esz)
 		return r, v, true
 	}
 
-	// Fast path: linear bump allocation in current chunk.
-	for {
-		c := p.chunks[p.index]
-		if c.next < chunkSize {
-			si := c.next
-			c.next++
-			c.slots[si].rc = 1 // reset ref count to 1
-			v := unsafe.Add(c.base, uintptr(si)*p.elemSz)
-			return pack(p.index, si), v, true
-		}
-
-		// Move to next pre-allocated chunk if available.
-		if int(p.index)+1 < len(p.chunks) {
-			p.index++
-			continue
-		}
-
-		// Need to grow by one chunk.
-		if len(p.chunks) >= maxChunks {
-			return 0, nil, false
-		}
-		a.grow(p)
-		p.index = uint32(len(p.chunks) - 1)
+	// use next slot in current chunk if possible
+	c := p.current
+	if c.next < chunkSize {
+		si := c.next
+		c.slots[si].rc = 1 // reset ref count to 1
+		c.next++
+		v := unsafe.Add(c.base, uintptr(si)*p.esz)
+		return pack(p.index, si), v, true
 	}
+
+	return 0, nil, false
+}
+
+func (a *Arena) newSlow(p *typePool) (Reference, unsafe.Pointer, bool) {
+	// next chunk
+	p.index++
+
+	// can use pre-allocated chunk?
+	if int(p.index) < len(p.chunks) {
+		c := p.chunks[p.index]
+		p.current = c
+		c.slots[0].rc = 1 // reset ref count to 1
+		c.next = 1
+		return pack(p.index, 0), c.base, true
+	}
+
+	// can allocate new chunk?
+	if p.index < maxChunks {
+		c := &typeChunk{base: p.alloc(), next: 1}
+		p.current = c
+		c.slots[0].rc = 1 // reset ref count to 1
+		p.chunks = append(p.chunks, c)
+		return pack(p.index, 0), c.base, true
+	}
+
+	return 0, nil, false
 }
 
 // Pin marks the reference as pinned, meaning it will not be released until arena reset.
@@ -186,7 +198,7 @@ func (a *Arena) Release(pool Type, r Reference) {
 			// add to free-list if ref count reached zero
 			s.nextFree = p.free
 			if a.zeroOnRelease {
-				ptr := unsafe.Add(p.chunks[ci].base, uintptr(si)*p.elemSz)
+				ptr := unsafe.Add(p.chunks[ci].base, uintptr(si)*p.esz)
 				p.reset(ptr)
 			}
 			p.free = r
@@ -200,35 +212,42 @@ func (a *Arena) Release(pool Type, r Reference) {
 func (a *Arena) Resolve(pool Type, r Reference) unsafe.Pointer {
 	p := &a.pools[pool]
 	ci, si := unpack(r)
-	return unsafe.Add(p.chunks[ci].base, uintptr(si)*p.elemSz)
+	return unsafe.Add(p.chunks[ci].base, uintptr(si)*p.esz)
 }
 
 // Reset clears all allocated values and makes the pool ready for the next cycle.
-func (a *Arena) Reset(pool Type) {
+// If full == true, it drops all resources allocated after pool creation, leaving only the base pre-allocated resources.
+// If full == false, it keeps all currently allocated resources for reuse.
+func (a *Arena) Reset(pool Type, full bool) {
 	p := &a.pools[pool]
-	a.reset(p)
-}
 
-func (a *Arena) grow(p *typePool) {
-	// allocate new chunk
-	base := p.alloc()
-	c := &typeChunk{base: base}
-
-	// add new chunk to pool
-	p.chunks = append(p.chunks, c)
-}
-
-func (a *Arena) reset(p *typePool) {
-	// release unused chunks
-	for i := p.base; i < uint32(len(p.chunks)); i++ {
-		p.chunks[i] = nil
+	if full {
+		// reset tail pointers to nil to release resources allocated after pool creation
+		for i := p.base; i < uint32(len(p.chunks)); i++ {
+			p.chunks[i] = nil
+		}
+		p.chunks = p.chunks[:p.base]     // drop all chunks allocated after pool creation (if any)
+		p.index = min(p.index, p.base-1) // adjust index so Reset can safely clear all remaining chunks
+		p.current = p.chunks[p.index]
 	}
-	p.chunks = p.chunks[:p.base]
 
-	// reset bump cursors in retained chunks
-	for ci := range p.chunks {
-		p.chunks[ci].next = 0
+	// set values to zero to release potentially held resources when enabled
+	for ci := uint32(0); ci <= p.index; ci++ {
+		c := p.chunks[ci]
+		if a.zeroOnReset {
+			ptr := c.base
+			for i := uint32(0); i < c.next; i++ {
+				if i > 0 {
+					ptr = unsafe.Add(ptr, p.esz)
+				}
+				p.reset(ptr)
+			}
+		}
+		c.next = 0 // reset chunk to initial state
 	}
-	p.free = 0
+
+	// reset pool state
 	p.index = 0
+	p.current = p.chunks[0]
+	p.free = 0
 }

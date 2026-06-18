@@ -7,7 +7,7 @@ import (
 
 func TestArena_NewResolveReleaseAndReuse(t *testing.T) {
 	p := Type(0)
-	a := NewArena(With[string](p, 0))
+	a := NewArena(true, true, With[string](p, 0))
 
 	r, _, ok := a.New(p)
 	if !ok {
@@ -44,14 +44,17 @@ func TestArena_NewResolveReleaseAndReuse(t *testing.T) {
 func TestArena_PreAllocMultipleChunks(t *testing.T) {
 	p := Type(0)
 	total := chunkSize*3 + 1 // spans 4 chunks
-	a := NewArena(With[int](p, total))
+	a := NewArena(true, true, With[int](p, total))
 
-	allocated, free := a.Stats(p)
+	allocated, used, free := a.Stats(p)
 	if allocated != chunkSize*4 {
 		t.Fatalf("allocated = %d, want %d", allocated, chunkSize*4)
 	}
-	if free != allocated {
-		t.Fatalf("free = %d, want %d (all pre-allocated slots should be free)", free, allocated)
+	if used != 0 {
+		t.Fatalf("used = %d, want 0", used)
+	}
+	if free != 0 {
+		t.Fatalf("free = %d, want 0", free)
 	}
 
 	// Allocate every slot and verify each succeeds.
@@ -76,7 +79,7 @@ func TestArena_PreAllocMultipleChunks(t *testing.T) {
 // TestArena_RetainRequiresMatchingReleases verifies reference-count semantics.
 func TestArena_RetainRequiresMatchingReleases(t *testing.T) {
 	p := Type(0)
-	a := NewArena(With[int](p, 0))
+	a := NewArena(true, true, With[int](p, 0))
 
 	r, _, _ := a.New(p)
 	*(*int)(a.Resolve(p, r)) = 99
@@ -112,7 +115,7 @@ func TestArena_RetainRequiresMatchingReleases(t *testing.T) {
 // not reference-counted and are not returned to the free-list on Release.
 func TestArena_PinPreventsRetainAndReleaseEffects(t *testing.T) {
 	p := Type(0)
-	a := NewArena(With[string](p, 0))
+	a := NewArena(true, true, With[string](p, 0))
 
 	r, _, _ := a.New(p)
 	*(*string)(a.Resolve(p, r)) = "pinned"
@@ -141,7 +144,7 @@ func TestArena_PinPreventsRetainAndReleaseEffects(t *testing.T) {
 // the reference count would overflow math.MaxUint32.
 func TestArena_RetainMaxRefCountPinsSlot(t *testing.T) {
 	p := Type(0)
-	a := NewArena(With[int](p, 0))
+	a := NewArena(true, true, With[int](p, 0))
 
 	r, _, _ := a.New(p)
 	ci, si := unpack(r)
@@ -157,7 +160,7 @@ func TestArena_RetainMaxRefCountPinsSlot(t *testing.T) {
 // TestArena_ZeroOnReleaseFalse verifies that WithZeroOnRelease(false) skips zeroing.
 func TestArena_ZeroOnReleaseFalse(t *testing.T) {
 	p := Type(0)
-	a := NewArena(WithZeroOnRelease(false), With[int](p, 0))
+	a := NewArena(false, true, With[int](p, 0))
 
 	r, _, _ := a.New(p)
 	*(*int)(a.Resolve(p, r)) = 77
@@ -171,33 +174,48 @@ func TestArena_ZeroOnReleaseFalse(t *testing.T) {
 // TestArena_Stats verifies that Stats returns correct allocated and free counts.
 func TestArena_Stats(t *testing.T) {
 	p := Type(0)
-	a := NewArena(With[int](p, 0))
+	a := NewArena(true, true, With[int](p, 0))
 
-	allocated, free := a.Stats(p)
+	allocated, used, free := a.Stats(p)
 	if allocated != chunkSize {
 		t.Fatalf("initial allocated = %d, want %d", allocated, chunkSize)
 	}
-	if free != chunkSize {
-		t.Fatalf("initial free = %d, want %d", free, chunkSize)
+	if used != 0 {
+		t.Fatalf("initial used = %d, want 0", used)
+	}
+	if free != 0 {
+		t.Fatalf("initial free = %d, want 0", free)
 	}
 
 	r, _, _ := a.New(p)
-	_, free = a.Stats(p)
-	if free != chunkSize-1 {
-		t.Fatalf("free after one New = %d, want %d", free, chunkSize-1)
+	allocated, used, free = a.Stats(p)
+	if allocated != chunkSize {
+		t.Fatalf("allocated after New = %d, want %d", allocated, chunkSize)
+	}
+	if used != 1 {
+		t.Fatalf("used after New = %d, want 1", used)
+	}
+	if free != 0 {
+		t.Fatalf("free after New = %d, want 0", free)
 	}
 
 	a.Release(p, r)
-	_, free = a.Stats(p)
-	if free != chunkSize {
-		t.Fatalf("free after Release = %d, want %d", free, chunkSize)
+	allocated, used, free = a.Stats(p)
+	if allocated != chunkSize {
+		t.Fatalf("allocated after Release = %d, want %d", allocated, chunkSize)
+	}
+	if used != 1 {
+		t.Fatalf("used after Release = %d, want 0", used)
+	}
+	if free != 1 {
+		t.Fatalf("free after Release = %d, want 1", free)
 	}
 }
 
 // TestArena_AutoGrow verifies that the pool grows automatically when all slots are used.
 func TestArena_AutoGrow(t *testing.T) {
 	p := Type(0)
-	a := NewArena(With[int](p, 0))
+	a := NewArena(true, true, With[int](p, 0))
 
 	// Exhaust the first chunk.
 	refs := make([]Reference, chunkSize)
@@ -209,9 +227,12 @@ func TestArena_AutoGrow(t *testing.T) {
 		refs[i] = r
 	}
 
-	allocated, _ := a.Stats(p)
+	allocated, used, _ := a.Stats(p)
 	if allocated != chunkSize {
 		t.Fatalf("allocated before grow = %d, want %d", allocated, chunkSize)
+	}
+	if used != chunkSize {
+		t.Fatalf("used before grow = %d, want %d", used, chunkSize)
 	}
 
 	// One more allocation must trigger a grow.
@@ -220,9 +241,12 @@ func TestArena_AutoGrow(t *testing.T) {
 		t.Fatal("New after chunk exhaustion returned ok=false")
 	}
 
-	allocated, _ = a.Stats(p)
+	allocated, used, _ = a.Stats(p)
 	if allocated != chunkSize*2 {
 		t.Fatalf("allocated after grow = %d, want %d", allocated, chunkSize*2)
+	}
+	if used != chunkSize+1 {
+		t.Fatalf("used after grow = %d, want %d", used, chunkSize+1)
 	}
 
 	// The new reference should be in the second chunk.
@@ -236,7 +260,7 @@ func TestArena_AutoGrow(t *testing.T) {
 // TestArena_Reset verifies that Reset makes all pre-allocated slots available again.
 func TestArena_Reset(t *testing.T) {
 	p := Type(0)
-	a := NewArena(With[int](p, chunkSize*2))
+	a := NewArena(true, true, With[int](p, chunkSize*2))
 
 	// Allocate all pre-allocated slots.
 	total := chunkSize * 2
@@ -247,19 +271,28 @@ func TestArena_Reset(t *testing.T) {
 		}
 	}
 
-	_, free := a.Stats(p)
+	allocated, used, free := a.Stats(p)
+	if allocated != total {
+		t.Fatalf("allocated before Reset = %d, want %d", allocated, total)
+	}
+	if used != total {
+		t.Fatalf("used before Reset = %d, want %d", used, total)
+	}
 	if free != 0 {
 		t.Fatalf("free before Reset = %d, want 0", free)
 	}
 
-	a.Reset(p)
+	a.Reset(p, true)
 
-	allocated, free := a.Stats(p)
+	allocated, used, free = a.Stats(p)
 	if allocated != total {
 		t.Fatalf("allocated after Reset = %d, want %d", allocated, total)
 	}
-	if free != total {
-		t.Fatalf("free after Reset = %d, want %d", free, total)
+	if used != 0 {
+		t.Fatalf("used after Reset = %d, want 0", used)
+	}
+	if free != 0 {
+		t.Fatalf("free after Reset = %d, want 0", free)
 	}
 
 	// Extra chunks allocated after init should be dropped.
@@ -273,7 +306,7 @@ func TestArena_Reset(t *testing.T) {
 func TestArena_MultipleTypes(t *testing.T) {
 	pInt := Type(0)
 	pStr := Type(1)
-	a := NewArena(With[int](pInt, 0), With[string](pStr, 0))
+	a := NewArena(true, true, With[int](pInt, 0), With[string](pStr, 0))
 
 	ri, vi, ok := a.New(pInt)
 	if !ok {
@@ -304,7 +337,7 @@ func TestArena_MultipleTypes(t *testing.T) {
 // TestArena_ReleaseOnPinnedIsNoop verifies Release is a no-op when rc == 0 (pinned).
 func TestArena_ReleaseOnPinnedIsNoop(t *testing.T) {
 	p := Type(0)
-	a := NewArena(With[int](p, 0))
+	a := NewArena(true, true, With[int](p, 0))
 
 	r, _, _ := a.New(p)
 	*(*int)(a.Resolve(p, r)) = 7
