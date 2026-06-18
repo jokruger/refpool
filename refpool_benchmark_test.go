@@ -68,6 +68,49 @@ func BenchmarkAllocateNewValues(b *testing.B) {
 	})
 }
 
+func BenchmarkAllocateAfterReset(b *testing.B) {
+	const batch = 256 * 4
+
+	b.Run("Pool", func(b *testing.B) {
+		p := refpool.NewPool[Value](batch, false, false)
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; {
+			p.Reset(false)
+			for j := 0; j < batch && i < b.N; j++ {
+				i++
+				_, v, ok := p.New()
+				if !ok {
+					b.Fatal("pool New returned ok=false")
+				}
+				v.a = i
+				v.b = i + 1
+			}
+		}
+	})
+
+	b.Run("Arena", func(b *testing.B) {
+		a := refpool.NewArena(refpool.With[Value](0, batch))
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; {
+			a.Reset(0)
+			for j := 0; j < batch && i < b.N; j++ {
+				i++
+				_, v, ok := a.New(0)
+				if !ok {
+					b.Fatal("arena New returned ok=false")
+				}
+				vv := (*Value)(v)
+				vv.a = i
+				vv.b = i + 1
+			}
+		}
+	})
+}
+
 func BenchmarkAccessValues(b *testing.B) {
 	b.Run("Pointer", func(b *testing.B) {
 		for i := range sz {
