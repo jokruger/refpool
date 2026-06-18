@@ -1,0 +1,447 @@
+package refpool
+
+import (
+	"math"
+	"testing"
+)
+
+func TestPool_NewResolveReleaseAndReuse(t *testing.T) {
+	p := NewPool[string](0, true, true)
+
+	r, _, ok := p.New()
+	if !ok {
+		t.Fatal("first New returned ok=false, want true")
+	}
+	if r != pack(0, 0) {
+		t.Fatalf("first reference = %#x, want %#x", r, pack(0, 0))
+	}
+
+	*p.Resolve(r) = "live"
+	if got := *p.Resolve(r); got != "live" {
+		t.Fatalf("resolved value = %q, want %q", got, "live")
+	}
+
+	p.Release(r)
+	if got := *p.Resolve(r); got != "" {
+		t.Fatalf("released value = %q, want zero value", got)
+	}
+
+	reused, _, ok := p.New()
+	if !ok {
+		t.Fatal("New after Release returned ok=false, want true")
+	}
+	if reused != r {
+		t.Fatalf("reused reference = %#x, want %#x", reused, r)
+	}
+	if got := *p.Resolve(reused); got != "" {
+		t.Fatalf("reused value = %q, want zero value", got)
+	}
+}
+
+func TestPool_RetainRequiresMatchingReleases(t *testing.T) {
+	p := NewPool[int](0, true, true)
+
+	r, _, _ := p.New()
+	*p.Resolve(r) = 42
+	p.Retain(r)
+	p.Retain(r)
+
+	p.Release(r)
+	p.Release(r)
+	if got := *p.Resolve(r); got != 42 {
+		t.Fatalf("value after non-final releases = %d, want 42", got)
+	}
+
+	next, _, _ := p.New()
+	if next == r {
+		t.Fatalf("New before final Release returned original reference %#x", r)
+	}
+
+	p.Release(r)
+	if got := *p.Resolve(r); got != 0 {
+		t.Fatalf("value after final Release = %d, want zero", got)
+	}
+
+	reused, _, _ := p.New()
+	if reused != r {
+		t.Fatalf("reused reference = %#x, want %#x", reused, r)
+	}
+}
+
+func TestPool_PinPreventsReleaseAndRetainEffects(t *testing.T) {
+	p := NewPool[string](0, true, true)
+
+	r, _, _ := p.New()
+	*p.Resolve(r) = "pinned"
+	p.Pin(r)
+	p.Retain(r)
+	p.Release(r)
+
+	if got := *p.Resolve(r); got != "pinned" {
+		t.Fatalf("pinned value after Retain/Release = %q, want %q", got, "pinned")
+	}
+
+	next, _, _ := p.New()
+	if next == r {
+		t.Fatalf("New after releasing pinned reference returned pinned reference %#x", r)
+	}
+	if p.chunks[0].slots[0].rc != 0 {
+		t.Fatalf("pinned slot rc = %d, want 0", p.chunks[0].slots[0].rc)
+	}
+}
+
+func TestPool_RetainMaxRefCountPinsSlot(t *testing.T) {
+	p := NewPool[int](0, true, true)
+
+	r, _, _ := p.New()
+	ci, si := unpack(r)
+	p.chunks[ci].slots[si].rc = math.MaxUint32 - 1
+
+	p.Retain(r)
+	if got := p.chunks[ci].slots[si].rc; got != 0 {
+		t.Fatalf("rc after retaining max count = %d, want pinned rc 0", got)
+	}
+
+	p.Release(r)
+	next, _, _ := p.New()
+	if next == r {
+		t.Fatalf("New after releasing auto-pinned reference returned pinned reference %#x", r)
+	}
+}
+
+func TestPool_ReleaseClearsPointerValues(t *testing.T) {
+	p := NewPool[*int](0, true, true)
+
+	v := 42
+	r, _, _ := p.New()
+	*p.Resolve(r) = &v
+
+	p.Release(r)
+	if got := *p.Resolve(r); got != nil {
+		t.Fatalf("released pointer value = %v, want nil", got)
+	}
+}
+
+func TestPool_ReleaseCanKeepValueWhenZeroOnReleaseDisabled(t *testing.T) {
+	p := NewPool[*int](0, false, true)
+
+	v := 42
+	r, _, _ := p.New()
+	*p.Resolve(r) = &v
+
+	p.Release(r)
+	if got := *p.Resolve(r); got != &v {
+		t.Fatalf("released pointer value = %v, want %v", got, &v)
+	}
+}
+
+func TestPool_AllocationAcrossChunkBoundary(t *testing.T) {
+	p := NewPool[int](chunkSize, true, true)
+
+	var refs []Reference
+	for range chunkSize + 2 {
+		r, _, ok := p.New()
+		if !ok {
+			t.Fatal("New returned ok=false before reaching capacity")
+		}
+		refs = append(refs, r)
+	}
+
+	if refs[chunkSize-1] != pack(0, chunkSize-1) {
+		t.Fatalf("last first-chunk reference = %#x, want %#x", refs[chunkSize-1], pack(0, chunkSize-1))
+	}
+	if refs[chunkSize] != pack(1, 0) {
+		t.Fatalf("first second-chunk reference = %#x, want %#x", refs[chunkSize], pack(1, 0))
+	}
+	if refs[chunkSize+1] != pack(1, 1) {
+		t.Fatalf("second second-chunk reference = %#x, want %#x", refs[chunkSize+1], pack(1, 1))
+	}
+	if len(p.chunks) != 2 {
+		t.Fatalf("len(p.chunks) = %d, want 2", len(p.chunks))
+	}
+	if p.index != 1 {
+		t.Fatalf("p.index = %d, want 1", p.index)
+	}
+}
+
+func TestPool_ReuseFollowsFreeListLIFO(t *testing.T) {
+	p := NewPool[int](0, true, true)
+
+	r1, _, ok := p.New()
+	if !ok {
+		t.Fatal("first New returned ok=false, want true")
+	}
+	r2, _, ok := p.New()
+	if !ok {
+		t.Fatal("second New returned ok=false, want true")
+	}
+	r3, _, ok := p.New()
+	if !ok {
+		t.Fatal("third New returned ok=false, want true")
+	}
+
+	p.Release(r1)
+	p.Release(r2)
+	p.Release(r3)
+
+	reused1, _, ok := p.New()
+	if !ok {
+		t.Fatal("first reuse New returned ok=false, want true")
+	}
+	reused2, _, ok := p.New()
+	if !ok {
+		t.Fatal("second reuse New returned ok=false, want true")
+	}
+	reused3, _, ok := p.New()
+	if !ok {
+		t.Fatal("third reuse New returned ok=false, want true")
+	}
+
+	if reused1 != r3 || reused2 != r2 || reused3 != r1 {
+		t.Fatalf(
+			"reuse order mismatch: got [%#x %#x %#x], want [%#x %#x %#x]",
+			reused1, reused2, reused3, r3, r2, r1,
+		)
+	}
+}
+
+func TestPool_NewSlowOverflowReturnsFalse(t *testing.T) {
+	p := &Pool[int]{
+		chunks: []*chunk[int]{{}},
+		index:  maxChunks,
+	}
+
+	r, v, ok := p.newSlow()
+	if ok {
+		t.Fatal("newSlow returned ok=true at overflow boundary, want false")
+	}
+	if r != 0 {
+		t.Fatalf("overflow reference = %#x, want 0", r)
+	}
+	if v != nil {
+		t.Fatalf("overflow value pointer = %v, want nil", v)
+	}
+}
+
+func TestPool_NewStoresBaseChunks(t *testing.T) {
+	cases := []struct {
+		preAlloc int
+		want     uint32
+	}{
+		{0, 1},
+		{1, 1},
+		{chunkSize, 1},
+		{chunkSize + 1, 2},
+		{2 * chunkSize, 2},
+	}
+
+	for _, c := range cases {
+		p := NewPool[int](c.preAlloc, true, true)
+		if p.baseChunks != c.want {
+			t.Errorf("New(%d).baseChunks = %d, want %d", c.preAlloc, p.baseChunks, c.want)
+		}
+		if len(p.chunks) != int(c.want) {
+			t.Errorf("New(%d) allocated %d chunks, want %d", c.preAlloc, len(p.chunks), c.want)
+		}
+	}
+}
+
+func TestPool_ResetKeepsAllocatedChunks(t *testing.T) {
+	p := NewPool[int](1, true, true)
+
+	var last Reference
+	for range chunkSize + 1 {
+		r, _, _ := p.New()
+		*p.Resolve(r) = 42
+		last = r
+	}
+
+	if len(p.chunks) != 2 {
+		t.Fatalf("len(p.chunks) before Reset = %d, want 2", len(p.chunks))
+	}
+
+	p.Release(last)
+	p.Reset(false)
+
+	if len(p.chunks) != 2 {
+		t.Fatalf("len(p.chunks) after Reset = %d, want 2", len(p.chunks))
+	}
+	if p.index != 0 {
+		t.Fatalf("p.index after Reset = %d, want 0", p.index)
+	}
+	if p.free != 0 {
+		t.Fatalf("p.free after Reset = %d, want 0", p.free)
+	}
+	if p.chunks[0].next != 0 {
+		t.Fatalf("p.chunks[0].next after Reset = %d, want 0", p.chunks[0].next)
+	}
+
+	r, _, _ := p.New()
+	if r != pack(0, 0) {
+		t.Fatalf("first reference after Reset = %#x, want %#x", r, pack(0, 0))
+	}
+	if got := *p.Resolve(r); got != 0 {
+		t.Fatalf("first value after Reset = %d, want zero", got)
+	}
+}
+
+func TestPool_ResetFullShrinksToBaseChunks(t *testing.T) {
+	p := NewPool[int](chunkSize+1, true, true)
+
+	for range (2 * chunkSize) + 1 {
+		r, _, _ := p.New()
+		*p.Resolve(r) = 42
+	}
+
+	if p.baseChunks != 2 {
+		t.Fatalf("p.baseChunks = %d, want 2", p.baseChunks)
+	}
+	if len(p.chunks) != 3 {
+		t.Fatalf("len(p.chunks) before ResetFull = %d, want 3", len(p.chunks))
+	}
+
+	p.Reset(true)
+
+	if len(p.chunks) != int(p.baseChunks) {
+		t.Fatalf("len(p.chunks) after ResetFull = %d, want %d", len(p.chunks), p.baseChunks)
+	}
+	if p.index != 0 {
+		t.Fatalf("p.index after ResetFull = %d, want 0", p.index)
+	}
+	if p.free != 0 {
+		t.Fatalf("p.free after ResetFull = %d, want 0", p.free)
+	}
+
+	r, _, _ := p.New()
+	if r != pack(0, 0) {
+		t.Fatalf("first reference after ResetFull = %#x, want %#x", r, pack(0, 0))
+	}
+	if got := *p.Resolve(r); got != 0 {
+		t.Fatalf("first value after ResetFull = %d, want zero", got)
+	}
+}
+
+func TestPool_ResetFullClearsDroppedChunkPointers(t *testing.T) {
+	p := NewPool[*int](1, true, true)
+
+	v := 42
+	for range chunkSize + 1 {
+		r, _, _ := p.New()
+		*p.Resolve(r) = &v
+	}
+
+	if len(p.chunks) != 2 {
+		t.Fatalf("len(p.chunks) before ResetFull = %d, want 2", len(p.chunks))
+	}
+
+	p.Reset(true)
+
+	chunksBackingArray := p.chunks[:cap(p.chunks)]
+	for i := int(p.baseChunks); i < len(chunksBackingArray); i++ {
+		if chunksBackingArray[i] != nil {
+			t.Fatalf("dropped chunk pointer at backing index %d was not cleared", i)
+		}
+	}
+}
+
+func TestPool_ResetCanKeepValuesWhenZeroOnResetDisabled(t *testing.T) {
+	p := NewPool[*int](1, true, false)
+
+	v := 42
+	r, _, _ := p.New()
+	*p.Resolve(r) = &v
+
+	p.Reset(false)
+
+	r2, _, ok := p.New()
+	if !ok {
+		t.Fatal("New after Reset returned ok=false, want true")
+	}
+	if r2 != pack(0, 0) {
+		t.Fatalf("first reference after Reset = %#x, want %#x", r2, pack(0, 0))
+	}
+	if got := *p.Resolve(r2); got != &v {
+		t.Fatalf("value after Reset with zeroing disabled = %v, want %v", got, &v)
+	}
+}
+
+func TestPool_StatsSemantics(t *testing.T) {
+	p := NewPool[int](2*chunkSize, true, true)
+
+	allocated, used, free := p.Stats()
+	if allocated != 2*chunkSize || used != 0 || free != 0 {
+		t.Fatalf("initial stats = (%d, %d, %d), want (%d, 0, 0)", allocated, used, free, 2*chunkSize)
+	}
+
+	r1, _, _ := p.New()
+	r2, _, _ := p.New()
+	r3, _, _ := p.New()
+
+	allocated, used, free = p.Stats()
+	if allocated != 2*chunkSize || used != 3 || free != 0 {
+		t.Fatalf("after 3 allocations stats = (%d, %d, %d), want (%d, 3, 0)", allocated, used, free, 2*chunkSize)
+	}
+
+	p.Release(r1)
+	p.Release(r2)
+
+	allocated, used, free = p.Stats()
+	if allocated != 2*chunkSize || used != 3 || free != 2 {
+		t.Fatalf("after releasing 2 refs stats = (%d, %d, %d), want (%d, 3, 2)", allocated, used, free, 2*chunkSize)
+	}
+
+	// Reusing free-list slots must not increase used because no new slot was allocated.
+	if _, _, ok := p.New(); !ok {
+		t.Fatal("reuse New returned ok=false, want true")
+	}
+	if _, _, ok := p.New(); !ok {
+		t.Fatal("reuse New returned ok=false, want true")
+	}
+
+	allocated, used, free = p.Stats()
+	if allocated != 2*chunkSize || used != 3 || free != 0 {
+		t.Fatalf("after reusing free refs stats = (%d, %d, %d), want (%d, 3, 0)", allocated, used, free, 2*chunkSize)
+	}
+
+	// Allocating a new slot increments used.
+	if _, _, ok := p.New(); !ok {
+		t.Fatal("New after free-list reuse returned ok=false, want true")
+	}
+
+	allocated, used, free = p.Stats()
+	if allocated != 2*chunkSize || used != 4 || free != 0 {
+		t.Fatalf("after allocating one new slot stats = (%d, %d, %d), want (%d, 4, 0)", allocated, used, free, 2*chunkSize)
+	}
+
+	// Keep r3 live to ensure active references are part of used.
+	if *p.Resolve(r3) != 0 {
+		t.Fatalf("unexpected value at live reference %#x", r3)
+	}
+}
+
+func TestPool_StatsUsedAcrossChunkBoundaryIncludesFree(t *testing.T) {
+	p := NewPool[int](0, true, true)
+
+	refs := make([]Reference, 0, chunkSize+1)
+	for range chunkSize + 1 {
+		r, _, ok := p.New()
+		if !ok {
+			t.Fatal("New returned ok=false across chunk boundary")
+		}
+		refs = append(refs, r)
+	}
+
+	allocated, used, free := p.Stats()
+	if allocated != 2*chunkSize || used != chunkSize+1 || free != 0 {
+		t.Fatalf("after crossing chunk boundary stats = (%d, %d, %d), want (%d, %d, 0)", allocated, used, free, 2*chunkSize, chunkSize+1)
+	}
+
+	for i := 0; i < 3; i++ {
+		p.Release(refs[i])
+	}
+
+	allocated, used, free = p.Stats()
+	if allocated != 2*chunkSize || used != chunkSize+1 || free != 3 {
+		t.Fatalf("after releases stats = (%d, %d, %d), want (%d, %d, 3)", allocated, used, free, 2*chunkSize, chunkSize+1)
+	}
+}

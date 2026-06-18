@@ -20,17 +20,121 @@ make resource ownership explicit in performance-sensitive Go programs.
 
 ## Concurrency
 
-`Pool` is intentionally not concurrency-safe. It does not use atomics or locks
+`Pool` and `Arena` are intentionally not concurrency-safe. They do not use atomics or locks
 around allocation, reference counting, free-list updates, or resets.
 
 This keeps the hot path small for single-threaded runtimes, arena-like phases,
 and systems that already have ownership or scheduling guarantees. If a pool is
 shared across goroutines, the caller must provide external synchronization.
 
-## Usage Rules
+## Pool
+
+`Pool[T]` is a single-type, typed generic pool. Create one with `NewPool[T]` and interact
+with it through methods on the returned pointer.
+
+## Arena
+
+`Arena` is a multi-type pool that hosts up to 256 independent typed sub-pools, each
+identified by a `Type` (a `uint8`). This lets a single arena manage all resource
+types for a subsystem — such as a virtual machine or compiler pass — and reset them
+all in bulk.
+
+### Creating an Arena
+
+```go
+arena := refpool.NewArena(
+    refpool.With[MyStruct](myType, 1024),   // pre-allocate 1024 slots of type MyStruct
+    refpool.With[string](strType, 512),     // pre-allocate 512 string slots
+    refpool.WithZeroOnRelease(false),       // optional: skip zeroing on Release
+)
+```
+
+Each `With[T](pool, preAlloc)` option registers a pool for the given `Type` identifier and
+pre-allocates at least `preAlloc` slots. `WithZeroOnRelease` applies to all sub-pools.
+
+### Arena Usage Rules
+
+`Reference(0)` is reserved as the invalid/nil reference. The same rules that apply to
+`Pool` apply to each sub-pool within an `Arena`:
+
+- Call `Retain` whenever a logical copy of a reference is created.
+- Each `Retain` must be matched by a `Release`, unless the slot is pinned.
+- `Pin` marks a slot as arena-owned; `Retain`/`Release` have no effect on pinned slots.
+- `Resolve` returns a temporary pointer — do not store it.
+- After `Reset`, old references must not be used until their slots are re-allocated.
+
+### Arena API
+
+| Function / Method | Description |
+|---|---|
+| `NewArena(opts...)` | Creates a new Arena with the given options. |
+| `With[T](pool, preAlloc)` | Registers type `T` for `pool` and pre-allocates slots. |
+| `WithZeroOnRelease(flag)` | Controls whether `Release` zeroes the value (default `true`). |
+| `arena.New(pool)` | Allocates (or reuses) a slot; returns `(Reference, any, bool)`. |
+| `arena.Resolve(pool, r)` | Returns `any` pointer for the reference. |
+| `Resolve[T](arena, pool, r)` | Generic helper; returns a typed `*T`. |
+| `arena.Retain(pool, r)` | Increments reference count. |
+| `arena.Release(pool, r)` | Decrements reference count; frees slot at zero. |
+| `arena.Pin(pool, r)` | Pins a slot; bypasses reference counting. |
+| `arena.Reset(pool)` | Drops extra chunks and resets the free-list for `pool`. |
+| `arena.Stats(pool)` | Returns `(allocated, free int)` for `pool`. |
+
+### Arena Example
+
+```go
+package main
+
+import (
+  "fmt"
+
+  "github.com/jokruger/refpool"
+)
+
+const (
+  TypeNode refpool.Type = 0
+  TypeEdge refpool.Type = 1
+)
+
+type Node struct{ Label string }
+type Edge struct{ From, To refpool.Reference }
+
+func main() {
+  arena := refpool.NewArena(
+    refpool.With[Node](TypeNode, 1024),
+    refpool.With[Edge](TypeEdge, 2048),
+  )
+
+  nRef, nAny, ok := arena.New(TypeNode)
+  if !ok {
+    panic("arena overflow")
+  }
+  nAny.(*Node).Label = "root"
+
+  eRef, eAny, ok := arena.New(TypeEdge)
+  if !ok {
+    panic("arena overflow")
+  }
+  eAny.(*Edge).From = nRef
+
+  fmt.Println(refpool.Resolve[Node](arena, TypeNode, nRef).Label) // root
+  fmt.Println(refpool.Resolve[Edge](arena, TypeEdge, eRef).From == nRef) // true
+
+  arena.Retain(TypeNode, nRef)
+  arena.Release(TypeNode, nRef)
+  arena.Release(TypeNode, nRef) // final release — slot returned to free-list
+
+  // Bulk reset for next cycle.
+  arena.Reset(TypeNode)
+  arena.Reset(TypeEdge)
+}
+```
+
+
+
+## Pool Usage Rules
 
 `Reference(0)` is reserved as an invalid / nil reference. References returned by
-`New` are compact integer handles and may be stored or copied, but the pointer
+`NewPool` are compact integer handles and may be stored or copied, but the pointer
 returned by `Resolve` is temporary and must not be retained.
 
 Use `Retain` whenever a logical copy of a reference is created and may outlive
@@ -51,7 +155,7 @@ Reset zeroing is enabled by default and can be disabled per pool with
 `SetZeroOnReset(false)` for throughput-focused workloads that can tolerate value
 retention between reset cycles.
 `ResetFull` also drops chunks allocated after pool creation. After either reset,
-old references must not be used until their slots are allocated again by `New`.
+old references must not be used until their slots are allocated again by `NewPool`.
 
 ## Example
 
@@ -69,7 +173,7 @@ type Object struct {
 }
 
 func main() {
-  pool := refpool.New[Object](1024)
+  pool := refpool.NewPool[Object](1024)
 
   ref, obj, ok := pool.New()
   if !ok {

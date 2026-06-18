@@ -4,24 +4,24 @@ import "math"
 
 // Pool of reference-counted values.
 type Pool[T any] struct {
-	chunks        []*poolChunk[T] // allocated chunks
-	current       *poolChunk[T]   // currently active chunk (same as chunks[index])
-	free          Reference       // free-list head
-	index         uint32          // current chunk in use
-	baseChunks    uint32          // number of pre-allocated chunks calculated when new Pool was created
-	zero          T               // zero value of T for value reset
-	zeroOnRelease bool            // whether Release should reset value to zero
-	zeroOnReset   bool            // whether Reset should reset values to zero
+	chunks        []*chunk[T] // allocated chunks
+	current       *chunk[T]   // currently active chunk (same as chunks[index])
+	free          Reference   // free-list head
+	index         uint32      // current chunk in use
+	baseChunks    uint32      // number of pre-allocated chunks calculated when new Pool was created
+	zero          T           // zero value of T for value reset
+	zeroOnRelease bool        // whether Release should reset value to zero
+	zeroOnReset   bool        // whether Reset should reset values to zero
 }
 
 // Chunk of slots for storing values.
-type poolChunk[T any] struct {
-	slots [chunkSize]poolSlot[T] // fixed-size array of slots
-	next  uint32                 // next free slot index in the chunk (if all slots are used, next is set to chunkSize)
+type chunk[T any] struct {
+	slots [chunkSize]slot[T] // fixed-size array of slots
+	next  uint32             // next free slot index in the chunk (if all slots are used, next is set to chunkSize)
 }
 
 // Single value slot.
-type poolSlot[T any] struct {
+type slot[T any] struct {
 	value    T         // value stored in the slot
 	nextFree Reference // next unused reference in free-list
 	rc       uint32    // reference count (0 = slot is not used yet, or it is used but should not be reference counted)
@@ -37,11 +37,11 @@ func NewPool[T any](preAlloc int, zeroOnRelease, zeroOnReset bool) *Pool[T] {
 	cs = max(1, cs)
 
 	// allocate chunks slice with exact initial length and extra buffer for future growth
-	p := &Pool[T]{chunks: make([]*poolChunk[T], cs, max(cs, minChunks))}
+	p := &Pool[T]{chunks: make([]*chunk[T], cs, max(cs, minChunks))}
 
 	// pre-allocate chunks
 	for i := range p.chunks {
-		p.chunks[i] = &poolChunk[T]{}
+		p.chunks[i] = &chunk[T]{}
 	}
 
 	// store baseChunks for future use in ResetFull
@@ -118,7 +118,7 @@ func (p *Pool[T]) newSlow() (Reference, *T, bool) {
 
 	// can allocate new chunk?
 	if p.index < maxChunks {
-		c := &poolChunk[T]{next: 1}
+		c := &chunk[T]{next: 1}
 		p.current = c
 		c.slots[0].rc = 1 // reset ref count to 1
 		p.chunks = append(p.chunks, c)

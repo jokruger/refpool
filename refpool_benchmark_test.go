@@ -48,6 +48,24 @@ func BenchmarkAllocateNewValues(b *testing.B) {
 			refs[j] = r
 		}
 	})
+
+	b.Run("Arena", func(b *testing.B) {
+		for i := range sz {
+			refs[i] = 0
+		}
+		a := refpool.NewArena(refpool.With[Value](0, pa))
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := range b.N {
+			r, v, _ := a.New(0)
+			*v.(*Value) = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
+			j := i % sz
+			if refs[j] != 0 {
+				a.Release(0, refs[j])
+			}
+			refs[j] = r
+		}
+	})
 }
 
 func BenchmarkAccessValues(b *testing.B) {
@@ -81,6 +99,26 @@ func BenchmarkAccessValues(b *testing.B) {
 		for i := range b.N {
 			r := refs[i%sz]
 			v := p.Resolve(r)
+			total += v.a
+			v.b++
+		}
+		ints[0] = total
+	})
+
+	b.Run("ArenaResolve", func(b *testing.B) {
+		a := refpool.NewArena(refpool.With[Value](0, pa))
+		for i := range sz {
+			r, v, _ := a.New(0)
+			*v.(*Value) = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
+			refs[i] = r
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		var total int
+		for i := range b.N {
+			r := refs[i%sz]
+			v := a.Resolve(0, r).(*Value)
 			total += v.a
 			v.b++
 		}
