@@ -171,7 +171,7 @@ func BenchmarkAccessValues(b *testing.B) {
 
 func BenchmarkRetainValues(b *testing.B) {
 	b.Run("Pool", func(b *testing.B) {
-		p := refpool.NewPool[Value](pa, true, true)
+		p := refpool.NewPool[Value](pa, false, false)
 		for i := range sz {
 			r, v, _ := p.New()
 			*v = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
@@ -188,7 +188,7 @@ func BenchmarkRetainValues(b *testing.B) {
 	})
 
 	b.Run("Arena", func(b *testing.B) {
-		a := refpool.NewArena(true, true, refpool.With[Value](0, pa))
+		a := refpool.NewArena(false, false, refpool.With[Value](0, pa))
 		for i := range sz {
 			r, v, _ := a.New(0)
 			*(*Value)(v) = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
