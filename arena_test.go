@@ -205,7 +205,7 @@ func TestArena_Stats(t *testing.T) {
 		t.Fatalf("allocated after Release = %d, want %d", allocated, chunkSize)
 	}
 	if used != 1 {
-		t.Fatalf("used after Release = %d, want 0", used)
+		t.Fatalf("used after Release = %d, want 1", used)
 	}
 	if free != 1 {
 		t.Fatalf("free after Release = %d, want 1", free)
