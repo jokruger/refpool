@@ -17,13 +17,13 @@ func TestArena_NewResolveReleaseAndReuse(t *testing.T) {
 		t.Fatalf("first reference = %#x, want %#x", r, pack(0, 0))
 	}
 
-	*Resolve[string](a, p, r) = "live"
-	if got := *Resolve[string](a, p, r); got != "live" {
+	*(*string)(a.Resolve(p, r)) = "live"
+	if got := *(*string)(a.Resolve(p, r)); got != "live" {
 		t.Fatalf("resolved value = %q, want %q", got, "live")
 	}
 
 	a.Release(p, r)
-	if got := *Resolve[string](a, p, r); got != "" {
+	if got := *(*string)(a.Resolve(p, r)); got != "" {
 		t.Fatalf("released value = %q, want zero value", got)
 	}
 
@@ -34,7 +34,7 @@ func TestArena_NewResolveReleaseAndReuse(t *testing.T) {
 	if reused != r {
 		t.Fatalf("reused reference = %#x, want %#x", reused, r)
 	}
-	if got := *Resolve[string](a, p, r); got != "" {
+	if got := *(*string)(a.Resolve(p, r)); got != "" {
 		t.Fatalf("reused value = %q, want zero value", got)
 	}
 }
@@ -61,13 +61,13 @@ func TestArena_PreAllocMultipleChunks(t *testing.T) {
 		if !ok {
 			t.Fatalf("New #%d returned ok=false", i)
 		}
-		*v.(*int) = i
+		*(*int)(v) = i
 		refs = append(refs, r)
 	}
 
 	// Verify values survive.
 	for i, r := range refs {
-		if got := *Resolve[int](a, p, r); got != i {
+		if got := *(*int)(a.Resolve(p, r)); got != i {
 			t.Fatalf("refs[%d] value = %d, want %d", i, got, i)
 		}
 	}
@@ -79,14 +79,14 @@ func TestArena_RetainRequiresMatchingReleases(t *testing.T) {
 	a := NewArena(With[int](p, 0))
 
 	r, _, _ := a.New(p)
-	*Resolve[int](a, p, r) = 99
+	*(*int)(a.Resolve(p, r)) = 99
 	a.Retain(p, r)
 	a.Retain(p, r)
 
 	// Two of three refs released — value must survive.
 	a.Release(p, r)
 	a.Release(p, r)
-	if got := *Resolve[int](a, p, r); got != 99 {
+	if got := *(*int)(a.Resolve(p, r)); got != 99 {
 		t.Fatalf("value after two releases = %d, want 99", got)
 	}
 
@@ -98,7 +98,7 @@ func TestArena_RetainRequiresMatchingReleases(t *testing.T) {
 
 	// Final release — slot goes to free-list and is zeroed.
 	a.Release(p, r)
-	if got := *Resolve[int](a, p, r); got != 0 {
+	if got := *(*int)(a.Resolve(p, r)); got != 0 {
 		t.Fatalf("value after final Release = %d, want 0", got)
 	}
 
@@ -115,12 +115,12 @@ func TestArena_PinPreventsRetainAndReleaseEffects(t *testing.T) {
 	a := NewArena(With[string](p, 0))
 
 	r, _, _ := a.New(p)
-	*Resolve[string](a, p, r) = "pinned"
+	*(*string)(a.Resolve(p, r)) = "pinned"
 	a.Pin(p, r)
 	a.Retain(p, r)  // no-op on pinned
 	a.Release(p, r) // no-op on pinned
 
-	if got := *Resolve[string](a, p, r); got != "pinned" {
+	if got := *(*string)(a.Resolve(p, r)); got != "pinned" {
 		t.Fatalf("pinned value after Retain/Release = %q, want %q", got, "pinned")
 	}
 
@@ -160,10 +160,10 @@ func TestArena_ZeroOnReleaseFalse(t *testing.T) {
 	a := NewArena(WithZeroOnRelease(false), With[int](p, 0))
 
 	r, _, _ := a.New(p)
-	*Resolve[int](a, p, r) = 77
+	*(*int)(a.Resolve(p, r)) = 77
 	a.Release(p, r)
 
-	if got := *Resolve[int](a, p, r); got != 77 {
+	if got := *(*int)(a.Resolve(p, r)); got != 77 {
 		t.Fatalf("value after Release (zeroOnRelease=false) = %d, want 77", got)
 	}
 }
@@ -279,24 +279,24 @@ func TestArena_MultipleTypes(t *testing.T) {
 	if !ok {
 		t.Fatal("New int returned ok=false")
 	}
-	*vi.(*int) = 42
+	*(*int)(vi) = 42
 
 	rs, vs, ok := a.New(pStr)
 	if !ok {
 		t.Fatal("New string returned ok=false")
 	}
-	*vs.(*string) = "hello"
+	*(*string)(vs) = "hello"
 
-	if got := *Resolve[int](a, pInt, ri); got != 42 {
+	if got := *(*int)(a.Resolve(pInt, ri)); got != 42 {
 		t.Fatalf("int value = %d, want 42", got)
 	}
-	if got := *Resolve[string](a, pStr, rs); got != "hello" {
+	if got := *(*string)(a.Resolve(pStr, rs)); got != "hello" {
 		t.Fatalf("string value = %q, want %q", got, "hello")
 	}
 
 	// Release one type; the other must be unaffected.
 	a.Release(pInt, ri)
-	if got := *Resolve[string](a, pStr, rs); got != "hello" {
+	if got := *(*string)(a.Resolve(pStr, rs)); got != "hello" {
 		t.Fatalf("string value after releasing int = %q, want %q", got, "hello")
 	}
 }
@@ -307,13 +307,13 @@ func TestArena_ReleaseOnPinnedIsNoop(t *testing.T) {
 	a := NewArena(With[int](p, 0))
 
 	r, _, _ := a.New(p)
-	*Resolve[int](a, p, r) = 7
+	*(*int)(a.Resolve(p, r)) = 7
 	a.Pin(p, r)
 
 	a.Release(p, r) // should not add to free-list
 
 	// Verify the value is unchanged.
-	if got := *Resolve[int](a, p, r); got != 7 {
+	if got := *(*int)(a.Resolve(p, r)); got != 7 {
 		t.Fatalf("value after Release on pinned = %d, want 7", got)
 	}
 

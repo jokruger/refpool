@@ -1,6 +1,9 @@
 package refpool
 
-import "math"
+import (
+	"math"
+	"unsafe"
+)
 
 type Arena struct {
 	pools         [256]typePool
@@ -8,9 +11,9 @@ type Arena struct {
 }
 
 type typePool struct {
-	alloc   func() any                       // function to allocate a new chunk buffer
-	reset   func(buff any, index uint32)     // function to reset a value to zero
-	resolve func(buff any, index uint32) any // function to resolve a value from the buffer
+	alloc  func() (any, unsafe.Pointer) // allocate typed buffer and base pointer
+	reset  func(ptr unsafe.Pointer)     // reset a value to zero
+	elemSz uintptr                      // element size for pointer arithmetic
 
 	chunks []*typeChunk // allocated chunks
 	free   Reference    // free-list head
@@ -18,7 +21,8 @@ type typePool struct {
 }
 
 type typeChunk struct {
-	buff  any                 // buffer for storing values
+	buff  any                 // typed buffer; keeps memory alive for GC
+	base  unsafe.Pointer      // base pointer to first value in typed buffer
 	slots [chunkSize]typeSlot // fixed-size array of slots
 }
 
@@ -43,27 +47,22 @@ func WithZeroOnRelease(flag bool) func(*Arena) {
 
 func With[T any](pool Type, preAlloc int) func(*Arena) {
 	type buffer = [chunkSize]T
+	var zero T
 
-	alloc := func() any {
-		return &buffer{}
+	alloc := func() (any, unsafe.Pointer) {
+		b := &buffer{}
+		return b, unsafe.Pointer(&b[0])
 	}
 
-	reset := func(buff any, index uint32) {
-		var zero T
-		b := buff.(*buffer)
-		b[index] = zero
-	}
-
-	resolve := func(buff any, index uint32) any {
-		b := buff.(*buffer)
-		return &b[index]
+	reset := func(ptr unsafe.Pointer) {
+		*(*T)(ptr) = zero
 	}
 
 	return func(a *Arena) {
 		p := &a.pools[pool]
 		p.alloc = alloc
 		p.reset = reset
-		p.resolve = resolve
+		p.elemSz = unsafe.Sizeof(zero)
 
 		// calc how many chunks we need to pre-allocate
 		cs := preAlloc / chunkSize
@@ -79,11 +78,6 @@ func With[T any](pool Type, preAlloc int) func(*Arena) {
 			a.grow(p)
 		}
 	}
-}
-
-// Resolve returns a typed pointer to the value associated with the reference.
-func Resolve[T any](a *Arena, pool Type, r Reference) *T {
-	return a.Resolve(pool, r).(*T)
 }
 
 // Stats returns the current pool stats.
@@ -105,7 +99,7 @@ func (a *Arena) Stats(pool Type) (allocated, free int) {
 
 // New creates a new (or re-use free) reference to a value in the pool. The value is not initialized and should be set
 // by the caller. Returns the reference, value pointer and flag indicating whether allocation was successful.
-func (a *Arena) New(pool Type) (Reference, any, bool) {
+func (a *Arena) New(pool Type) (Reference, unsafe.Pointer, bool) {
 	p := &a.pools[pool]
 
 	if p.free == 0 {
@@ -117,9 +111,11 @@ func (a *Arena) New(pool Type) (Reference, any, bool) {
 
 	r := p.free
 	ci, si := unpack(r)
-	p.free = p.chunks[ci].slots[si].nextFree
-	p.chunks[ci].slots[si].rc = 1 // reset ref count to 1
-	v := p.resolve(p.chunks[ci].buff, si)
+	c := p.chunks[ci]
+	s := &c.slots[si]
+	p.free = s.nextFree
+	s.rc = 1 // reset ref count to 1
+	v := unsafe.Add(c.base, uintptr(si)*p.elemSz)
 
 	return r, v, true
 }
@@ -162,7 +158,8 @@ func (a *Arena) Release(pool Type, r Reference) {
 			// add to free-list if ref count reached zero
 			s.nextFree = p.free
 			if a.zeroOnRelease {
-				p.reset(p.chunks[ci].buff, si)
+				ptr := unsafe.Add(p.chunks[ci].base, uintptr(si)*p.elemSz)
+				p.reset(ptr)
 			}
 			p.free = r
 		}
@@ -172,10 +169,10 @@ func (a *Arena) Release(pool Type, r Reference) {
 // Resolve returns a pointer to the value associated with the reference. The returned pointer is temporary and should
 // not be stored anywhere. The caller should use Resolve only to access the value of the resource, but not to manage its
 // lifetime.
-func (a *Arena) Resolve(pool Type, r Reference) any {
+func (a *Arena) Resolve(pool Type, r Reference) unsafe.Pointer {
 	p := &a.pools[pool]
 	ci, si := unpack(r)
-	return p.resolve(p.chunks[ci].buff, si)
+	return unsafe.Add(p.chunks[ci].base, uintptr(si)*p.elemSz)
 }
 
 // Reset clears all allocated values and makes the pool ready for the next cycle.
@@ -186,7 +183,8 @@ func (a *Arena) Reset(pool Type) {
 
 func (a *Arena) grow(p *typePool) {
 	// allocate new chunk
-	c := &typeChunk{buff: p.alloc()}
+	b, base := p.alloc()
+	c := &typeChunk{buff: b, base: base}
 
 	// link new chunk slots as free-list; chain the last slot to the existing free-list head so that
 	// multiple grow calls during initialization (With[T] with preAlloc > chunkSize) are handled correctly.

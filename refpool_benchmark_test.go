@@ -58,7 +58,7 @@ func BenchmarkAllocateNewValues(b *testing.B) {
 		b.ResetTimer()
 		for i := range b.N {
 			r, v, _ := a.New(0)
-			*v.(*Value) = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
+			*(*Value)(v) = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
 			j := i % sz
 			if refs[j] != 0 {
 				a.Release(0, refs[j])
@@ -109,7 +109,7 @@ func BenchmarkAccessValues(b *testing.B) {
 		a := refpool.NewArena(refpool.With[Value](0, pa))
 		for i := range sz {
 			r, v, _ := a.New(0)
-			*v.(*Value) = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
+			*(*Value)(v) = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
 			refs[i] = r
 		}
 		b.ReportAllocs()
@@ -118,10 +118,46 @@ func BenchmarkAccessValues(b *testing.B) {
 		var total int
 		for i := range b.N {
 			r := refs[i%sz]
-			v := a.Resolve(0, r).(*Value)
+			v := (*Value)(a.Resolve(0, r))
 			total += v.a
 			v.b++
 		}
 		ints[0] = total
+	})
+}
+
+func BenchmarkRetainValues(b *testing.B) {
+	b.Run("Pool", func(b *testing.B) {
+		p := refpool.NewPool[Value](pa, true, true)
+		for i := range sz {
+			r, v, _ := p.New()
+			*v = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
+			refs[i] = r
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := range b.N {
+			r := refs[i%sz]
+			p.Retain(r)
+			p.Release(r)
+		}
+	})
+
+	b.Run("Arena", func(b *testing.B) {
+		a := refpool.NewArena(refpool.With[Value](0, pa))
+		for i := range sz {
+			r, v, _ := a.New(0)
+			*(*Value)(v) = Value{a: i, b: i + 1, c: i + 2, d: i + 3}
+			refs[i] = r
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := range b.N {
+			r := refs[i%sz]
+			a.Retain(0, r)
+			a.Release(0, r)
+		}
 	})
 }
